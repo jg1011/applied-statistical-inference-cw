@@ -1,0 +1,2416 @@
+---
+title: "MA40198 Coursework"
+author: "Jacob Green and Thomas Opalka"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning =FALSE)
+```
+
+# Libraries 
+
+<!--
+Your declared libraries should be included in this code chunk.
+-->
+
+```{r}
+library(rlang)
+library(numDeriv)
+```
+
+Recall the fit optim code given in labs. We add a NA catcher for hessians in 
+the case of bad convergence, otherwise the eigen function will flag an error. 
+Clearly such a matrix is not positive definite, so this is fine.
+
+```{r}
+fit_optim<- function(par       = c(0,0,0),
+                     fn ,
+                     gr ,
+                     method = "BFGS",
+                     hessian   = T,
+                     data      = data,
+                     sd        = c(1,1,1),
+                     N_samples = 20,
+                     seed      = 3141592){
+  
+      set.seed(seed)
+      # use set.seed for reproducibility purposes only. But always better to try without it and then settle at the end for reproducibility
+
+      fit <- vector("list",
+              length = N_samples)
+      
+      p <- length(par)
+      
+      i<-1
+
+      while (i<= N_samples){
+        
+        par_init <- rnorm(p, mean = par, sd = sd)
+  
+     # sometimes initial point are simply too far, which throws an straight error, hence the use of 'try'
+     fit[[i]]<-try( 
+          optim(par     = par_init,
+                fn      = fn,
+                gr      = gr,
+                data    = data,
+                method  = method,
+                hessian = hessian),
+          silent=T) # this supresses the red error messages
+     
+    if(inherits(fit[[i]], "try-error")){
+    
+      fit[[i]]$value <- NA
+      
+      i<-i+1
+    
+    }
+     else{
+      # if 'optim' doe snot return an error we check a few things
+      # checks convergence
+      no_convergence <- fit[[i]]$convergence > 0
+      # checks if asymptotic variances are possible to obtain
+      no_variance <- inherits(try(solve(fit[[i]]$hessian),
+                                  silent = T), 
+                              "try-error")
+      
+      # checks if hessian is not positive definite, we add an exception for when 
+      # the hessian is empty in the case of bad convergence 
+      if (any(is.na(fit[[i]]$hessian))){
+        no.pd <- TRUE
+      }
+      else{
+        no.pd <- prod(eigen(fit[[i]]$hessian)$values)<=0
+      }
+      # checks the gradient is away from zero vector
+      norm_grad <- norm(gr(fit[[i]]$par,data),type="2")>1e-3
+      ## WARNING: 'optim' stopping criterion is based on the function value not on the gradient hence this sanity check
+      
+      fail <-  no_convergence | no_variance | no.pd | norm_grad
+      
+      if (fail){
+      
+          fit[[i]]$value <- NA
+          i <- i+1
+          
+      }else{
+        
+        i <- i+1
+        
+      }
+    }
+}
+  
+      nll_vals<-rep(NA,N_samples)
+      
+      for (i in 1:N_samples){
+        nll_vals[i]<-fit[[i]]$value
+      }
+      
+  best_fit <- fit[[which.min(nll_vals)]]# save the final selected optimisation
+  best_fit
+
+}
+```
+
+# Part I
+
+```{r}
+#run to save the data frame 'dataQ1' on to the R environment
+load(url("https://people.bath.ac.uk/kai21/ASI/data/CW24/dataQ1.RData"))
+```
+
+Let us define the models. 
+
+#### Model 1
+
+We recall that the median of a normal distribution is equal to its mean 
+(via symmetry about mean), hence we may write our model as
+
+$$\mathcal{F}_1 := \left\{f_1(y | \mu_1((\alpha_1, \beta_1)^T, x), \sigma_1) : \boldsymbol{\theta}_1 = (\alpha_1, \beta_1, \sigma_1)^T \in \Theta_1 \subset \mathbb{R}^3\right\}$$
+Where $\Theta_1 = \mathbb{R}^2 \times \mathbb{R}_{> 0}$, $\mu_1((\alpha_1, \beta_1)^T, x) = \exp(\alpha_1 + \beta_1 x)$ and 
+
+$$f_1(y | \mu_1((\alpha_1, \beta_1)^T, x), \sigma_1) = \frac{1}{\sigma_1\exp(\alpha_1 + \beta_1 x) \sqrt{2\pi}} \exp\left(\frac{-1}{2\sigma_1^2\exp(2(\alpha_1 + \beta_1 x))}(y - \exp(\alpha_1 + \beta_1 x))^2\right){\bf 1}\{y > 0\}$$
+
+Taking logs, and multiplying by $-1$ we deduce the negative loglikelihood of $Y | x$ in model 1 is: 
+
+$$\phi_1(\mu((\alpha_1, \beta_1)^T, x), \sigma_1 | y) = \log(\sigma_1) + 
+(\alpha_1 + \beta_1 x) + \frac{1}{2}\log 2\pi - \frac{(y - \exp(\alpha_1 + \beta_1 x))^2}{2\sigma_1^2\exp(2(\alpha_1 + \beta_1 x))} + \log({\bf 1}\{y > 0\})$$
+
+for a single observation $(x, y)$. We use linearity of derivatives and independence 
+of observations to use only this formula, along with taking relevant sums, in our 
+computations for $\phi_1$. This is necessary as the deriv function cannot handle 
+sums. 
+
+To use unconstrained optimisation we need $\Theta = \mathbb{R}^3$, so we must 
+reparameterise. We use the reparameterisation 
+
+$${\bf g}: \Theta \to \mathbb{R}^3, (\alpha_1, \beta_1, \sigma_1)^T \mapsto 
+(\alpha_1, \beta_1, \exp({\sigma_1}))$$
+
+to write our loglikelihood (noting we can just sub ${\bf g}(\boldsymbol{\theta})$ 
+for $\boldsymbol{\theta}$ by definition 3.3 in lecture notes) as
+
+$$\phi_1({\bf g}(\mu((\alpha_1, \beta_1)^T, x), \sigma_1) | y) = \sigma_1 + 
+(\alpha_1 + \beta_1 x) + \frac{1}{2}\log 2\pi - \frac{(y - \exp(\alpha_1 + \beta_1 x))^2}{2\exp(2(\alpha_1 + \beta_1 x + \sigma_1))}$$
+
+Note we need not worry about reparameterising the gradient nor hessian, symbolic 
+differentiation will do this under the hood. 
+
+#### Model 2
+
+Moving onto the second model We note this is a lognormal distribution which has well known PDF. One could derive these by transforming $Y = e^X$ where $X$ is normal. We perform 
+a similar transformation for model 3, so we elect to leave the derivation out. 
+As before, our median of the normal random variable $\log Y$ is equal to the mean, 
+hence we may specify:
+
+$$\mathcal{F}_2 := \left\{f_2(y | \mu_2((\alpha_2, \beta_2)^T, x), \sigma_2) : \boldsymbol{\theta}_2 = (\alpha_2, \beta_2, \sigma_2)^T \in \Theta_2 \subset \mathbb{R}^3\right\}$$
+
+where $\Theta_2 = \mathbb{R}^2 \times \mathbb{R}_{> 0}$ and $\mu_2((\alpha_2, \beta_2)^T, x) = \alpha_2 + \beta_2 x$ and 
+
+$$
+f_2(y | \mu((\alpha_2, \beta_2)^T, x), \sigma_2) = \frac{1}{y\sigma_2\sqrt{2\pi}}
+\exp\left(\frac{-1}{2\sigma_2^2}(\log y - (\alpha_2 + \beta_2 x))^2\right){\bf 1}\{y > 0\}
+$$
+
+Taking logs, and multiplying by $-1$ we obtain the negative loglikelihood: 
+
+$$\phi_2(\mu((\alpha_2, \beta_2)^T, x), \sigma_2 | y) = \log y + \log\sigma_2 + \frac{1}{2} \log2\pi + \frac{(\log y - (\alpha_2 + \beta_2 x))^2}{2\sigma_2^2}$$
+We will make the same reparameterisation as we did with model 1, in order to apply 
+unconstrained optimisation, so reparameterise
+
+$${\bf g}: \Theta \to \mathbb{R}^3, (\alpha_2, \beta_2, \sigma_2)^T) \mapsto 
+(\alpha_2, \beta_2, \exp({\sigma_2}))$$
+
+to get a new loglikelihood of:
+
+$$\phi_2({\bf g}(\mu((\alpha_2, \beta_2)^T, x), \sigma_2) | y) = \log y + \sigma_2 + \frac{1}{2} \log2\pi + \frac{(\log y - (\alpha_2 + \beta_2 x))^2}{2\exp(2\sigma_2)}$$
+(The reasoning all being identical).
+
+By the same reasoning this is all we need to find our MLE and to perform model 
+selection. We also note we may (and do) drop the $\log({\bf 1}\{y > 0\})$ term as 
+all of our response variables are positive. Observe, 
+
+```{r}
+min(dataQ1$y)
+```
+
+#### Model 3
+
+Onto model 3, We recognise this as the log-logistic family, which can be obtained from the 
+logistic family by the classical approach to transforming random variables. We 
+also note that (well known) a logistic distribution has equal median and mean, 
+hence we write: 
+
+$$\mathcal{F}_3 := \left\{f_3(y | \mu_3((\alpha_3, \beta_3)^T, x), \sigma_3) : \boldsymbol{\theta}_3 = (\alpha_3, \beta_3, \sigma_3)^T \in \Theta_3 \subset \mathbb{R}^3\right\}$$
+
+where $\mu_3((\alpha_3, \beta_3)^T, \sigma_3) = \alpha_3 + \beta_3 x$, $\Theta_3 = \mathbb{R}^2 \times \mathbb{R}_{> 0}$ and 
+
+$$f_Y(y | \mu((\alpha_3, \beta_3)^T, x), \sigma_3) = \frac
+{\exp\left(\frac{\alpha_3 + \beta_3 x}{\sigma_3}\right)}
+{\sigma_3 y^{1 + 1 / \sigma_3}\left(1 + y^{-1/\sigma_3}
+\exp\left((\alpha_3 + \beta_3 x)/\sigma\right)\right)^2} {\bf 1}\{y > 0\}$$
+
+We show how to derive this distribution from the logistic distribution in 
+appendix A.
+
+Taking logs, and multiplying by $-1$ we observe a negative loglikelihood of
+
+$$
+\phi_3(\mu((\alpha_3, \beta_3)^T, x), \sigma_3 | y) 
+= - \frac{(\alpha_3 + \beta_3 x)}{\sigma_3}
++ \log \sigma_3 + \left(1 + \frac{1}{\sigma_3}\right)\log y 
++ 2 \log\left(1 + y^{-1/\sigma_3}\exp((\alpha_3 + \beta_3 x)/\sigma_3)\right)
+$$
+
+where we drop the indicator as this is always equal to one in our data set
+(see model 2 dialogue).
+
+Now as with our previous models, we apply the reparameterisation ${\bf g}$ in 
+order to use unconstrained optimisation algorithms, obtaining a negative loglikelihood
+of
+
+$$
+\phi_3({\bf g}(\mu((\alpha_3, \beta_3)^T, x), \sigma_3) | y)
+= - \frac{(\alpha_3 + \beta_3 x)}{\exp(\sigma_3)}
++ \sigma_3 + \left(1 + \exp(-\sigma_3)\right)\log y 
++ 2 \log\left(1 + y^{-\exp(-\sigma_3)}\exp\left(e^{-\sigma_3}(\alpha_3 + \beta_3 x)\right)\right)
+$$
+
+#### Model 4
+
+For model 4, We are given that this model is of the form 
+
+$$\mathcal{F}_4 := \left\{f_4(y | \mu_4((\alpha_4, \beta_4)^T, x), \sigma_4) : \boldsymbol{\theta}_4 = (\alpha_4, \beta_4, \sigma_4)^T \in \Theta_4 \subset \mathbb{R}^3\right\}$$
+
+where $\mu_4((\alpha_4, \beta_4)^T, \sigma_4) = \alpha_4 + \beta_4 x$, $\Theta_4 = \mathbb{R}^2 \times \mathbb{R}_{> 0}$ and 
+
+$$f_4(y | \mu_4((\alpha_4, \beta_4)^T, x), \sigma_4) = \frac{\log(2)\sigma_4}
+{\exp(\sigma_4(\alpha_4 + \beta_4 x))}y^{\sigma_4 - 1}\exp\left(-\log(2)\left(
+\frac{y}{\exp(\alpha_4 + \beta_4 x)}\right)^{\sigma_4}\right){\bf 1}\{y > 0\}$$
+
+Taking logs and multiplying by $-1$ we get a negative loglikelihood of: 
+
+$$\phi_4(\mu_4((\alpha_4, \beta_4)^T, x | y), \sigma_4) = -\log\log 2 - \log \sigma_4 
++ \sigma_4(\alpha_4 + \beta_4 x) - (\sigma_4 - 1)\log y + \left(\log(2)\left(
+\frac{y}{\exp(\alpha_4 + \beta_4 x)}\right)^{\sigma_4}\right)$$
+
+(dropping indicator due to data structure)
+
+Now applying our usual reparameterisation ${\bf g}$ this becomes:
+
+$$\phi_4({\bf g}(\mu((\alpha_4, \beta_4)^T, x), \sigma_4) | y) 
+= - \log\log 2 - \sigma_4 + (\alpha_4 + \beta_4 x)e^{\sigma_4} - 
+(e^{\sigma_4} - 1)\log y + \left(\log(2)\left(
+\frac{y}{\exp(\alpha_4 + \beta_4 x)}\right)^{\exp(\sigma_4)}\right)$$
+
+
+## Question 1.1
+
+First the data sets are made to fit the required format.
+
+```{r Q1.1.1}
+# Specify output variables
+P2_optim_1 <- P2_optim_2 <- P2_optim_3 <- P2_optim_4 <- vector("list", 5)
+names(P2_optim_1) <- names(P2_optim_2) <- names(P2_optim_3) <- names(P2_optim_4) <- c("mle","negloglik","gradient","hessian","AIC")
+```
+
+Next we define the models' negative loglikelihoods and respective derivatives in R:
+
+```{r}
+### Model 1 ###
+
+
+# Negative loglikelikehood in model 1 for symbolic differentiation
+neg_log_lik_expr_1 <- expr(
+  sigma1 + alpha1 + beta1*x + 0.5 * log(2 * pi)
+  + ((y - exp(alpha1 + beta1 * x))^2 
+     / (2 * exp(2 * (alpha1 + beta1 * x + sigma1))))
+) # note we use 1/2 * log(2pi) over log(sqrt(2pi)) as sqrts are slow to obtain!
+
+
+# Negative loglikelihood deriv function 
+neg_log_lik_deriv_1 <- deriv(expr = neg_log_lik_expr_1, 
+                             namevec = c("alpha1", "beta1", "sigma1"),
+                             function.arg = c("alpha1", "beta1", "sigma1", "x", "y"),
+                             hess = TRUE)
+
+
+# Evaluates negative loglikelihood at given params & data
+neg_log_lik_fn_1 <- function(theta, data=dataQ1){
+  
+  # Reparameterise with g(theta) = (theta1, theta2, exp(theta3)) 
+  aux <- neg_log_lik_deriv_1(alpha1 = theta[1],
+                              beta1 = theta[2],
+                              sigma1 = theta[3],
+                              x = data$x, y = data$y)
+  
+  # Sum over individual samples by independence assumption
+  sum(as.numeric(aux))
+}
+
+# Evaluates gradient of negative loglikelihood at given params & data
+neg_log_lik_gr_1 <- function(theta, data=dataQ1){
+  
+  aux <- neg_log_lik_deriv_1(alpha1 = theta[1],
+                              beta1 = theta[2],
+                              sigma1 = theta[3],
+                              x = data$x, y = data$y)
+  
+  # Able to sum over individual sample gradients by linearity of partial differentiation
+  as.numeric(apply(attr(aux,"gradient"),2,sum))
+}
+
+# Evaluates hessian of negative loglikelihood at given params & data
+neg_log_lik_hess_1 <- function(theta, data=dataQ1){
+  
+  aux <- neg_log_lik_deriv_1(alpha1 = theta[1],
+                              beta1 = theta[2],
+                              sigma1 = theta[3],
+                              x = data$x, y = data$y)
+  
+  # Able to sum over individual sample hessians by linearity of partial differentiation
+  hess <- apply(attr(aux,"hessian"),c(2,3),sum)
+  return(hess)
+}
+```
+
+
+
+```{r}
+### Model 2 ###
+
+
+# Negative loglikelikehood in model 1 for symbolic differentiation
+neg_log_lik_expr_2 = expr(
+  log(y) + sigma2 + 0.5 * log(2*pi) 
+  + (log(y) - alpha2 - beta2 * x)^2 / (2 * exp(2*sigma2))
+)
+
+# Negative loglikelihood deriv function 
+neg_log_lik_deriv_2 <- deriv(expr = neg_log_lik_expr_2, 
+                           namevec = c("alpha2", "beta2", "sigma2"),
+                           function.arg = c("alpha2", "beta2", "sigma2", "x", "y"),
+                           hess = TRUE)
+
+# Evaluates negative loglikelihood at given params & data
+neg_log_lik_fn_2 <- function(theta, data=dataQ1){
+  
+  aux <- neg_log_lik_deriv_2(alpha2 = theta[1],
+                             beta2 = theta[2],
+                             sigma2 = theta[3],
+                             data$x, data$y)
+  
+  # Sum over individual samples by independence assumption
+  sum(as.numeric(aux))
+}
+
+# Evaluates gradient of negative loglikelihood at given params & data
+neg_log_lik_gr_2 <- function(theta, data=dataQ1){
+  
+  aux <- neg_log_lik_deriv_2(alpha2 = theta[1],
+                             beta2 = theta[2],
+                             sigma2 = theta[3],
+                             data$x, data$y)
+    
+  # Able to sum over individual sample gradients by linearity of partial differentiation
+  as.numeric(apply(attr(aux,"gradient"),2,sum))
+}
+
+# Evaluates hessian of negative loglikelihood at given params & data
+neg_log_lik_hess_2 <- function(theta, data=dataQ1){
+  
+   aux <- neg_log_lik_deriv_2(alpha2 = theta[1],
+                              beta2 = theta[2],
+                              sigma2 = theta[3],
+                              data$x, data$y)
+  
+  # Able to sum over individual sample hessians by linearity of partial differentiation
+  apply(attr(aux,"hessian"),c(2,3),sum)
+}
+```
+
+
+
+```{r}
+### Model 3 ###
+
+
+neg_log_lik_expr_3 = expr(
+  - (alpha3 + beta3 * x)*(exp(-sigma3)) + sigma3 + (1 + exp(-sigma3)) * log(y) 
+  + 2 * log(1 + y^(-exp(-sigma3)) * exp((alpha3 + beta3 * x) * exp(-sigma3)))
+)
+
+neg_log_lik_deriv_3 <- deriv(expr = neg_log_lik_expr_3, 
+                           namevec = c("alpha3", "beta3", "sigma3"),
+                           function.arg = c("alpha3", "beta3", "sigma3", "x", "y"),
+                           hess = TRUE)
+
+# Evaluates negative loglikelihood at given params & data
+neg_log_lik_fn_3 <- function(theta, data=dataQ1){
+  
+  aux <- neg_log_lik_deriv_3(alpha3 = theta[1],
+                              beta3 = theta[2],
+                              sigma3 = theta[3],
+                              x = data$x, y = data$y)
+  
+  # Sum over individual samples by independence assumption
+  sum(as.numeric(aux))
+}
+
+# Evaluates gradient of negative loglikelihood at given params & data
+neg_log_lik_gr_3 <- function(theta, data=dataQ1){
+  
+  aux <- neg_log_lik_deriv_3(alpha3 = theta[1],
+                              beta3 = theta[2],
+                              sigma3 = theta[3],
+                              x = data$x, y = data$y)
+    
+  # Able to sum over individual sample gradients by linearity of partial differentiation
+  as.numeric(apply(attr(aux,"gradient"),2,sum))
+}
+
+# Evaluates hessian of negative loglikelihood at given params & sample
+neg_log_lik_hess_3 <- function(theta, data = dataQ1){
+  
+   aux <- neg_log_lik_deriv_3(alpha3 = theta[1],
+                              beta3 = theta[2],
+                              sigma3 = theta[3],
+                              x = data$x, y = data$y)
+  
+  # Able to sum over individual sample hessians by linearity of partial differentiation
+  apply(attr(aux,"hessian"),c(2,3),sum)
+}
+```
+
+
+
+```{r}
+### Model 4 ###
+
+
+neg_log_lik_expr_4 = expr(
+  -log(log(2)) - sigma4 + exp(sigma4)*(alpha4 + beta4 * x) - (exp(sigma4) - 1)*log(y) 
+  + log(2) * y^(exp(sigma4)) / exp(alpha4 + beta4 * x)^(exp(sigma4))
+)
+  
+neg_log_lik_deriv_4 <- deriv(expr = neg_log_lik_expr_4, 
+                         namevec = c("alpha4", "beta4", "sigma4"),
+                         function.arg = c("alpha4", "beta4", "sigma4", "x", "y"),
+                         hess = TRUE)
+
+# Evaluates negative loglikelihood at given params & sample
+neg_log_lik_fn_4 <- function(theta = c(0,0,0), data = dataQ1){
+
+  aux <- neg_log_lik_deriv_4(alpha4 = theta[1],
+                             beta4 = theta[2],
+                             sigma4 = theta[3],
+                             x = data$x, y = data$y)
+  
+  # Sum over individual samples by independence assumption
+  sum(as.numeric(aux))
+}
+
+# Evaluates gradient of negative loglikelihood at given params & sample
+neg_log_lik_gr_4 <- function(theta = c(0,0,0), data = dataQ1){
+  
+  aux <- neg_log_lik_deriv_4(alpha4 = theta[1],
+                             beta4 = theta[2],
+                             sigma4 = theta[3],
+                             x = data$x, y = data$y)
+    
+  # Able to sum over individual sample gradients by linearity of partial differentiation
+  as.numeric(apply(attr(aux,"gradient"),2,sum))
+}
+
+# Evaluates hessian of negative loglikelihood at given params & sample
+neg_log_lik_hess_4 <- function(theta = c(0,0,0), data = dataQ1){
+  
+   aux <- neg_log_lik_deriv_4(alpha4 = theta[1],
+                              beta4 = theta[2],
+                              sigma4 = theta[3],
+                              x = data$x, y = data$y)
+  
+  # Able to sum over individual sample hessians by linearity of partial differentiation
+  apply(attr(aux,"hessian"),c(2,3),sum)
+}
+```
+
+Now utilising fit_optim, which was given in a prior lab, the MLEs are found for all the models. 150 random starting points are used to ensure our converged value is the global minimum.
+
+```{r}
+### Optimisation Logic ### 
+
+
+fit_1 <- fit_optim(par = c(1,1,1),
+                        fn = neg_log_lik_fn_1,
+                        gr = neg_log_lik_gr_1,
+                        method = "BFGS",
+                        hessian = T,
+                        data = data.frame(dataQ1),
+                        sd = 3*c(1,1,1),
+                        N_samples = 150,
+                        seed = 900895
+                        )
+
+fit_2 <- fit_optim(par = c(1,1,1),
+                        fn = neg_log_lik_fn_2,
+                        gr = neg_log_lik_gr_2,
+                        method = "BFGS",
+                        hessian = T,
+                        data = data.frame(dataQ1),
+                        sd = 3*c(1,1,1),
+                        N_samples = 150,
+                        seed = 80085
+                        )
+
+
+fit_3 <- fit_optim(par = c(1,1,1),
+                        fn = neg_log_lik_fn_3,
+                        gr = neg_log_lik_gr_3,
+                        method = "BFGS",
+                        hessian = T,
+                        data = data.frame(dataQ1),
+                        sd = 2*c(1,1,1),
+                        N_samples = 150,
+                        seed = 900895
+                        )
+
+fit_4 <- fit_optim(par = c(1,1,1),
+                        fn = neg_log_lik_fn_4,
+                        gr = neg_log_lik_gr_4,
+                        method = "BFGS",
+                        hessian = T,
+                        data = data.frame(dataQ1),
+                        sd = 1*c(1,1,1),
+                        N_samples = 150,
+                        seed = 900895
+                        )
+
+```
+
+The data is then formatted as intended (making sure the parameters are unparameterised) and the AIC can then be computed:
+
+```{r}
+### Save final vars ###
+P2_optim_1 <- list(
+  mle = fit_1$par,
+  negloglik = fit_1$value, 
+  gradient = neg_log_lik_gr_1(fit_1$par, data=dataQ1),
+  hessian = neg_log_lik_hess_1(fit_1$par, data=dataQ1),
+  AIC = 2*(fit_1$value + 3)
+)
+
+P2_optim_2 <- list(
+  mle = fit_2$par,
+  negloglik = fit_2$value, 
+  gradient = neg_log_lik_gr_2(fit_2$par, data=dataQ1),
+  hessian = neg_log_lik_hess_2(fit_2$par, data=dataQ1),
+  AIC = 2*(fit_2$value + 3)
+)
+
+P2_optim_3 <- list(
+  mle = fit_3$par,
+  negloglik = fit_3$value, 
+  gradient = neg_log_lik_gr_3(fit_3$par, data=dataQ1),
+  hessian = neg_log_lik_hess_3(fit_3$par, data=dataQ1),
+  AIC = 2*(fit_3$value + 3)
+)
+
+P2_optim_4 <- list(
+  mle = fit_4$par,
+  negloglik = fit_4$value, 
+  gradient = neg_log_lik_gr_4(fit_4$par, data=dataQ1),
+  hessian = neg_log_lik_hess_4(fit_4$par, data=dataQ1),
+  AIC = 2*(fit_4$value + 3)
+)
+
+
+### Reparameterise ### 
+P2_optim_1$mle[3] <- exp(P2_optim_1$mle[3])
+P2_optim_2$mle[3] <- exp(P2_optim_2$mle[3])
+P2_optim_3$mle[3] <- exp(P2_optim_3$mle[3])
+P2_optim_4$mle[3] <- exp(P2_optim_4$mle[3])
+
+
+### Check outputs ### 
+print("Model 1 MLE:")
+P2_optim_1
+print("Model 2 MLE:")
+P2_optim_2
+print("Model 3 MLE:")
+P2_optim_3
+print("Model 4 MLE:")
+P2_optim_4
+```
+
+The outputs look reasonable, with no apparent errors, but to ensure the MLEs found are sufficiently close to a local minima the norms of the gradients at the MLE are checked:
+
+```{r}
+### Check gradient sizes are in line with computational guidelines ### 
+norm(P2_optim_1$gradient, type="2")
+norm(P2_optim_2$gradient, type="2")
+norm(P2_optim_3$gradient, type="2")
+norm(P2_optim_4$gradient, type="2")
+```
+
+They are all sufficiently small, being smaller than the desired absolute tolerance of $\epsilon_{abs} = 10^{-5}$, so we can continue. Checking the AIC's in isolation allows us to easily pick the best model (according to the AIC):
+
+```{r}
+P2_optim_1$AIC
+P2_optim_2$AIC
+P2_optim_3$AIC
+P2_optim_4$AIC
+```
+
+
+Model 3 has the lowest Akaike Information criterion, and thus we should select 
+this model to fit the data. Note it is closely followed by model 2. Also note 
+that as all our models have 3 parameters, selection with the Akaike Information 
+criterion is equivalent to selection with negative loglikelihoods. 
+
+
+## Question 1.2
+
+
+Assuming each model is correctly specified, we can make the approximation (see
+proposition 3.4 in lecture notes)
+
+$$
+{\bf g}(\boldsymbol{\hat{\theta}}_i) \sim \mathcal{N}({\bf g}(\boldsymbol{\theta}_i^\star) , [\mathcal{J}^{-1}]_{(i, i)})
+$$
+
+where $\boldsymbol{\theta}_i^\star$ is the $i^\text{th}$ true parameter, 
+$\boldsymbol{\hat{\theta}}_i$ our MLE for $\boldsymbol{\theta}_i^\star$ and 
+
+$$[\mathcal{J}^{-1}] \in \left\{
+\nabla_{\boldsymbol{\theta}}^2 \phi(\boldsymbol{\hat{\theta}} | {\bf y}), \, 
+\mathbb{E}_{\boldsymbol{\theta}}[\nabla_{\boldsymbol{\theta}}^2 
+\phi(\boldsymbol{\hat{\theta}} | {\bf Y})] {\Large \mid}_{\boldsymbol{\theta} = 
+\boldsymbol{\hat{\theta}}}\right\}$$
+
+is either the observed or estimated Fisher 
+information matrix. Importantly, this allows us to construct the following 95%
+confidence interval for $\theta_i^\star$: 
+
+$$\left(\hat{\theta}_i - 1.96 \times [\mathcal{J}^{-1}]_{(i,i)}\; , \;
+\hat{\theta}_i + 1.96 \times [\mathcal{J}^{-1}]_{(i,i)}\right)$$
+
+Using this we can easily compute our median confidence intervals by finding the Jacobian of $\mu$, which luckily is the same for all 4 models:
+
+$$J_{\mu}(\alpha,\beta,\sigma) = \left(\exp(\alpha + \beta x) \ , \ x \cdot \exp(\alpha + \beta x) \ , \ 0 \right)$$
+
+The $0$ is due to the fact that $\mu$ does not depend on $\sigma$. Then the asymptotic confidence bands can be computed using the Observed Fisher information matrix and the Jacobian.
+
+```{r Q1.2}
+# Set up grid to compute confidence intervals and estimates over
+n_grid     <- 1000 
+x          <- seq(1,15,length=n_grid)
+
+# Define variables to store this information
+P2_bands_1 <- P2_bands_2 <- 
+  P2_bands_3 <- P2_bands_4 <- matrix(NA,nrow=n_grid,ncol=3)
+colnames(P2_bands_1) <- colnames(P2_bands_2) <- 
+  colnames(P2_bands_3) <- colnames(P2_bands_4) <- c("lower","est","upper")
+
+
+# define mean
+muQ1 <- function(alpha, beta, x){
+  exp(alpha + beta * x)
+}
+
+# define jacobian
+jacQ1 <- function(alpha, beta, x){
+  matrix(c(muQ1(alpha, beta, x), x*muQ1(alpha, beta, x), 0),nrow=1, ncol=3)
+}
+
+
+
+
+for (i in 1:n_grid){
+  # Asymptotic standard deviations 
+  sd_1 <- sqrt(jacQ1(P2_optim_1$mle[1], P2_optim_1$mle[2],x[i]) %*% 
+          solve(P2_optim_1$hessian) %*% t(jacQ1(P2_optim_1$mle[1], P2_optim_1$mle[2],x[i])))
+  sd_2 <- sqrt(jacQ1(P2_optim_2$mle[1], P2_optim_2$mle[2],x[i]) %*%
+          solve(P2_optim_2$hessian) %*% t(jacQ1(P2_optim_2$mle[1], P2_optim_2$mle[2],x[i])))
+  sd_3 <- sqrt(jacQ1(P2_optim_3$mle[1], P2_optim_3$mle[2],x[i]) %*%
+          solve(P2_optim_1$hessian) %*% t(jacQ1(P2_optim_3$mle[1], P2_optim_3$mle[2],x[i])))
+  sd_4 <- sqrt(jacQ1(P2_optim_4$mle[1], P2_optim_4$mle[2],x[i]) %*%
+          solve(P2_optim_1$hessian) %*% t(jacQ1(P2_optim_4$mle[1], P2_optim_4$mle[2],x[i])))
+  
+  # Model 1   
+  
+
+  P2_bands_1[i,1] <- muQ1(P2_optim_1$mle[1], P2_optim_1$mle[2], x[i]) - 1.96*sd_1
+  P2_bands_1[i,2] <- muQ1(P2_optim_1$mle[1], P2_optim_1$mle[2], x[i])
+  P2_bands_1[i,3] <- muQ1(P2_optim_1$mle[1], P2_optim_1$mle[2], x[i]) + 1.96*sd_1
+
+  # Model 2
+  P2_bands_2[i,1] <- muQ1(P2_optim_2$mle[1], P2_optim_2$mle[2], x[i]) - 1.96*sd_2
+  P2_bands_2[i,2] <- muQ1(P2_optim_2$mle[1], P2_optim_2$mle[2], x[i])
+  P2_bands_2[i,3] <- muQ1(P2_optim_2$mle[1], P2_optim_2$mle[2], x[i]) + 1.96*sd_2
+
+  # Model 3
+  
+  P2_bands_3[i,1] <- muQ1(P2_optim_3$mle[1], P2_optim_3$mle[2], x[i]) - 1.96*sd_3
+  P2_bands_3[i,2] <- muQ1(P2_optim_3$mle[1], P2_optim_3$mle[2], x[i])
+  P2_bands_3[i,3] <- muQ1(P2_optim_3$mle[1], P2_optim_3$mle[2], x[i]) + 1.96*sd_3
+
+  # Model 4
+  
+  P2_bands_4[i,1] <- muQ1(P2_optim_4$mle[1], P2_optim_4$mle[2], x[i]) - 1.96*sd_4
+  P2_bands_4[i,2] <- muQ1(P2_optim_4$mle[1], P2_optim_4$mle[2], x[i])
+  P2_bands_4[i,3] <- muQ1(P2_optim_4$mle[1], P2_optim_4$mle[2], x[i]) + 1.96*sd_4
+}
+
+```
+
+### Model 1 plot
+
+```{r}
+plot(dataQ1$x, dataQ1$y,
+     main = "Scatterplot of data with the model 1 MLE median and a 95% median 
+     confidence interval overlayed",
+     xlab = "x", ylab="y", col="blue")
+
+
+lines(x, P2_bands_1[,1], col="red", lty=5)
+lines(x, P2_bands_1[,2], col="red")
+lines(x, P2_bands_1[,3], col="red", lty=5)
+
+```
+
+#### Model 2 plot
+
+```{r}
+plot(dataQ1$x, dataQ1$y,
+     main = "Scatterplot of data with the model 2 MLE median and a 95% median 
+     confidence interval overlayed",
+     xlab = "x", ylab="y", col="blue")
+
+lines(x, P2_bands_2[,1], col="red", lty=5)
+lines(x, P2_bands_2[,2], col="red")
+lines(x, P2_bands_2[,3], col="red", lty=5)
+```
+
+#### Model 3 plot
+
+```{r}
+plot(dataQ1$x, dataQ1$y,
+     main = "Scatterplot of data with the model 3 MLE median and a 95% median 
+     confidence interval overlayed",
+     xlab = "x", ylab="y", col="blue")
+
+lines(x, P2_bands_3[,1], col="red", lty=5)
+lines(x, P2_bands_3[,2], col="red")
+lines(x, P2_bands_3[,3], col="red", lty=5)
+```
+
+#### Model 4 plot
+
+```{r}
+plot(dataQ1$x, dataQ1$y,
+     main = "Scatterplot of data with the model 4 MLE median and a 95% median 
+     confidence interval overlayed",
+     xlab = "x", ylab="y", col="blue")
+
+lines(x, P2_bands_4[,1], col="red", lty=5)
+lines(x, P2_bands_4[,2], col="red")
+lines(x, P2_bands_4[,3], col="red", lty=5)
+```
+
+
+We see the confidence for for model 2 and model 3 are much tighter than those 
+in model 1 and model 4. This is to be expected, as models 2 and 3 have significantly 
+higher likelihoods at their MLE estimate than models 1 and 4.
+
+# Part II
+
+```{r}
+#run to save the data frame 'dataQ2'  on to the R environment
+load(url("https://people.bath.ac.uk/kai21/ASI/data/CW24/dataQ2.RData"))
+```
+
+First let us properly define the model:
+
+$$\mathcal{F}_{full} = : \left\{f(y|\mu(\alpha, \beta, x), \phi) \ :\ \begin{pmatrix}
+           \alpha \\
+           \beta 
+         \end{pmatrix} 
+         \in \boldsymbol{\mathcal{P}}(x) \subset R^2, \phi > 0   \right\}$$
+         
+Where:
+$$
+\mu(\alpha, \beta,x) = \frac{1}{\alpha + \beta x}
+$$
+
+Initially we cannot use the PDF of Gamma distribution as we do not know the shape nor the scale, however as we know the mean of the Gamma is $\mu$ and the Variance is $\phi \mu^2$, the shape and scale can be computed by solving the following simultaneous equations: 
+
+$$\begin{align} a b & =  \mu 
+\\
+a b^2 & = \phi \mu^2 
+\end{align}$$
+
+This gives $a = \frac{1}{\phi}$, and $b = \mu \phi$
+
+$$
+f(y|\mu (\alpha, \beta,x),\phi) = \frac{y^{\frac{1 - \phi}{\phi}} \exp(\frac{-y}{\mu \phi})}{\Gamma(\frac{1}{\phi})(\mu \phi)^{1/\phi}} 
+$$
+where $\Gamma$ is the Gamma function.
+
+From this a general loglikelihood for one obervation $(x_i,y_i)$ can be formed by taking logs and multiplying by $-1$ (The term $\Phi$ is used here to avoid confusion with the parameter $\phi$):
+
+$$\Phi (y|\mu (\alpha, \beta,x),\phi) = \frac{\phi -1}{\phi}\log(y) + \frac{y}{\mu \phi} + \log \left( \Gamma(\frac{1}{\phi}) \right) + \frac{1}{\phi}\log(\mu \phi)$$
+The Negative Loglikelihood defined above can be used for all the following subfamilies by substituting in their respective values of $\mu$ and $\phi$.
+
+Along with $\mathcal{F}_{full}$ consider the following subfamilies:
+
+\begin{align*}
+\mathcal{F}_{1} & =  \left\{f(y|\mu(\theta_1, -\theta_1 ^2, x), {\exp (\theta_1)}) \ :\ 
+       \theta_1  \in \Theta_1(x) \subset R\right\}
+       
+\\
+\\
+\mathcal{F}_{2} & =  \left\{f(y|\mu(\theta_2, \ \tau_2, x), {\exp (\theta_2)}) \ :\ \begin{pmatrix}
+           \theta_2 \\
+          \tau_2 
+         \end{pmatrix}  
+        \in \boldsymbol{\mathcal{T}}_2(x) \subset R^2
+        \right\}
+\\
+\\
+\mathcal{F}_{3} & =  \left\{f(y|\mu(\theta_3, -\theta_3 ^2, x),{\delta_3} )\ \quad :\quad \theta_3  \in \Theta_1(3) \subset R , \delta_3 > 0\right\} \end{align*}      
+
+where $f$ is defined the same as for $\mathcal{F}_{full}$.
+
+Conveniently the Negative Loglikelihood defined above can be used for all the following subfamilies by substituting in their respective values of $\mu$ and $\phi$.
+
+The parameter spaces $\Theta_1(x)$, $\boldsymbol{\mathcal{T}}_2(x)$, $\Theta_3(x)$ and $\boldsymbol{\mathcal{P}}(x)$ are then defined to be the sets such that the corresponding mean function $\mu(\cdot , \cdot, x)$ is strictly positive for the given $x$.
+
+This is problematic as we want to have an unconstrained optimisation problem so R's BFGS can properly derive the MLE. 
+
+To deal with this a reparameterisation can be done on $\alpha$ and $\beta$ to ensure that $\mu$ is always positive, while allowing for unconstrained optimisation.
+
+For $\mathcal{F}_{full}$, to make $\mu > 0$ consider the reparameterisation of:
+
+$$\boldsymbol{\mathbb {g_{full}}} : \boldsymbol{\mathcal{P}}(x) \times \mathbb{R}_{>0} \rightarrow \mathbb{R}^3 \ , \ (\alpha, \beta, \phi)^T \ \mapsto \ (\exp(\alpha) \ , \ \exp(\beta) - \exp(\alpha ) \ , \ \exp(\phi))^T $$
+
+
+This allows $\mu$ and $\frac{1}{\phi}$ to be greater than zero for all $\begin{pmatrix}\alpha \\\beta \\ \phi \end{pmatrix} \in \mathbb{R}^3$. $\mu$ will always be positive as x only takes values in the range of $[0,1]$.
+
+
+Similarly, for $\mathcal{F}_1$ we reparameterise as follows:
+
+$$\boldsymbol{\mathbb {g_1}} : {\Theta_1}(x) \rightarrow \mathbb{R} \ , \ \theta_1 \ \mapsto \ \frac{1}{1+e^{-\theta_1}} $$
+
+
+For $\mathcal{F}_2$ :
+
+$$\boldsymbol{\mathbb {g_{2}}} : \boldsymbol{\mathcal{T}}_2(x) \rightarrow \mathbb{R}^2 \ , \ (\theta_2, \tau_2)^T \ \mapsto \ (\exp(\theta_2) \ , \ \exp(\tau_2) - \exp(\theta_2 ) )^T $$
+
+
+For $\mathcal{F}_3$ :
+
+$$\boldsymbol{\mathbb {g_{3}}} : \Theta_3(x) \times \mathbb{R}_{>0} \rightarrow \mathbb{R}^2 \ , \ (\theta_3, \delta_3)^T \ \mapsto \ \left(\frac{1}{1+e^{-\theta_3}} \ , \ \exp(\delta_3) \right)^T $$
+
+These reparameterisations allows $\mu$ to be strictly positive while allowing for unconstrained optimisation for all families. These reparameterisations are all smooth bijections and can be substituted directly into the negative loglikelihood $\Phi$ and the chain rule from the reparameterisations will be handled by R's deriv function.
+
+
+```{r Q2.1_setup}
+P21_optim_1 <- P21_optim_2 <- P21_optim_3 <- P21_optim_full <- vector("list", 5)
+names(P21_optim_1) <- names(P21_optim_2) <- names(P21_optim_3) <- names(P21_optim_full) <- c("mle","negloglik","gradient","hessian","NIC")
+```
+
+## Question 2.1
+
+The Negative Log Likelihoods, with all their reparameterisations are defined for all 4 families;
+
+$\mathcal{F}_{full}$ in R:
+
+```{r}
+### Full Model ###
+
+
+## Reparameterise 
+alpha_r <- expr(exp(alpha))
+beta_r <- expr(exp(beta) - exp(alpha))
+phi_r <- expr(exp(phi))
+
+# Get gamma params
+mu_full <- expr(1 / (!!alpha_r + !!beta_r*x))
+a_full <- expr(1/!!phi_r)
+b_full <- expr(!!mu_full * !!phi_r)
+
+negloglik_expr_full <- expr(
+  lgamma(!!a_full) + !!a_full*log(!!b_full) - (!!a_full - 1)*log(y) + y/!!b_full
+)
+
+negloglik_deriv_full <- deriv(expr         = negloglik_expr_full,
+                         namevec      = c("alpha","beta","phi"),
+                         function.arg = c("alpha","beta","phi","x","y"),
+                         hessian      = TRUE)
+
+
+negloglik_fn_full <- function(theta = c(0,0,0),
+                            data = 1){
+  
+  aux  <- negloglik_deriv_full(alpha= theta[1],
+                               beta = theta[2],
+                               phi = theta[3],
+                               x      = data$x,
+                               y      = data$y)
+  
+  fn <- sum(as.numeric(aux))
+  
+  fn
+}
+
+
+negloglik_gr_full <- function(theta = c(0,0,0),
+                            data = 1){
+  
+  aux  <- negloglik_deriv_full(alpha= theta[1],
+                               beta = theta[2],
+                               phi = theta[3],
+                               x      = data$x,
+                               y      = data$y)
+  
+  grad <- apply(attr(aux,"gradient"),2,sum)
+  
+  grad
+}
+
+negloglik_hess_full <- function(theta, data = dataQ2F){
+  
+  aux  <- negloglik_deriv_full(alpha= theta[1],
+                               beta = theta[2],
+                               phi = theta[3],
+                               x      = data$x,
+                               y      = data$y)
+  
+  # Able to sum over individual sample hessians by linearity of partial differentiation
+  apply(attr(aux,"hessian"),c(2,3),sum)
+}
+```
+
+Then $\mathcal{F}_{1}$:
+
+```{r}
+### Model 1 ###
+
+
+## Reparameterise 
+theta_r <- expr(1/(1+exp(-theta)))
+
+## Get into standard form
+alpha_r <- expr(!!theta_r)
+beta_r <- expr(-(!!theta_r)^2)
+phi_r <- expr(exp(!!theta_r))
+
+# Get gamma params (for standard gamma dist)
+mu_1 <- expr(1 / (!!alpha_r + !!beta_r*x))
+a_1 <- expr(1/!!phi_r)
+b_1 <- expr(!!mu_1 * !!phi_r)
+
+negloglik_expr_1 <- expr(
+  lgamma(!!a_1) + !!a_1*log(!!b_1) - (!!a_1 - 1)*log(y) + y/!!b_1
+)
+
+negloglik_deriv_1 <- deriv(expr         = negloglik_expr_1,
+                           namevec      = c("theta"),
+                           function.arg = c("theta","x","y"),
+                           hessian      = TRUE)
+
+
+negloglik_fn_1 <- function(theta = 1,
+                            data = 1){
+  
+  aux  <- negloglik_deriv_1(theta = theta,
+                            x      = data$x,
+                            y      = data$y)
+  
+  fn <- sum(as.numeric(aux))
+  
+  fn
+}
+
+
+negloglik_gr_1 <- function(theta = 1,
+                            data = 1){
+  
+  aux  <- negloglik_deriv_1(theta = theta,
+                            x      = data$x,
+                            y      = data$y)
+  
+  grad <- apply(attr(aux,"gradient"),2,sum)
+  
+  grad
+}
+
+negloglik_hess_1 <- function(theta, data = dataQ2F){
+  
+   aux  <- negloglik_deriv_1(theta = theta,
+                             x      = data$x,
+                             y      = data$y)
+  
+  # Able to sum over individual sample hessians by linearity of partial differentiation
+  apply(attr(aux,"hessian"),c(2,3),sum)
+}
+```
+
+And $\mathcal{F}_{2}$:
+
+```{r}
+### Model 2 ###
+
+
+## Reparameterise 
+theta_r <- expr(exp(theta))
+tau_r <- expr(exp(tau) - exp(theta))
+
+## Get into standard form
+alpha_r <- expr(!!theta_r)
+beta_r <- expr(!!tau_r)
+phi_r <- expr(exp(!!theta_r))
+
+## Get gamma params (for standard gamma dist)
+mu_2 <- expr(1 / (!!alpha_r + !!beta_r*x))
+a_2 <- expr(1/!!phi_r)
+b_2 <- expr(!!mu_2 * !!phi_r)
+
+negloglik_expr_2 <- expr(
+  lgamma(!!a_2) + !!a_2*log(!!b_2) - (!!a_2 - 1)*log(y) + y/!!b_2
+)
+
+negloglik_deriv_2 <- deriv(expr         = negloglik_expr_2,
+                         namevec      = c("theta","tau"),
+                         function.arg = c("theta","tau","x","y"),
+                         hessian      = TRUE)
+
+negloglik_fn_2 <- function(theta = c(0,0),
+                            data = 1){
+  
+  aux  <- negloglik_deriv_2(theta = theta[1],
+                            tau = theta[2],
+                            x      = data$x,
+                            y      = data$y)
+  
+  fn <- sum(as.numeric(aux))
+  
+  fn
+}
+
+
+negloglik_gr_2 <- function(theta = c(0,0),
+                            data = 1){
+  
+  aux  <- negloglik_deriv_2(theta = theta[1],
+                            tau = theta[2],
+                            x      = data$x,
+                            y      = data$y)
+  
+  grad <- apply(attr(aux,"gradient"),2,sum)
+  
+  grad
+}
+
+
+negloglik_hess_2 <- function(theta, data = dataQ2F){
+  
+   aux  <- negloglik_deriv_2(theta = theta[1],
+                            tau = theta[2],
+                            x      = data$x,
+                            y      = data$y)
+    
+  # Able to sum over individual sample hessians by linearity of partial differentiation
+  apply(attr(aux,"hessian"),c(2,3),sum)
+}
+```
+
+And finally $\mathcal{F}_{3}$:
+
+
+```{r}
+### Model 3
+
+## Reparameterise 
+theta_r <- expr(1/(1+exp(-theta)))
+delta_r <- expr(exp(delta))
+
+## Get into standard form
+alpha_r <- expr(!!theta_r)
+beta_r <- expr(-(!!theta_r)^2)
+phi_r <- expr(!!delta_r)
+
+# Get gamma params (for standard gamma dist)
+mu_3 <- expr(1 / (!!alpha_r + !!beta_r*x))
+a_3 <- expr(1/!!phi_r)
+b_3 <- expr(!!mu_3 * !!phi_r)
+
+negloglik_expr_3 <- expr(
+  lgamma(!!a_3) + !!a_3*log(!!b_3) - (!!a_3 - 1)*log(y) + y/!!b_3
+)
+
+negloglik_deriv_3 <- deriv(expr         = negloglik_expr_3,
+                         namevec      = c("theta","delta"),
+                         function.arg = c("theta","delta","x","y"),
+                         hessian      = TRUE)
+
+
+negloglik_fn_3 <- function(theta = c(0,0),
+                          data = 1){
+  
+  aux  <- negloglik_deriv_3(theta = theta[1],
+                           delta = theta[2],
+                           x      = data$x,
+                           y      = data$y)
+  
+  fn <- sum(as.numeric(aux))
+  
+  fn
+}
+
+
+negloglik_gr_3 <- function(theta = c(0,0),
+                             data = 1){
+  
+  aux  <- negloglik_deriv_3(theta = theta[1],
+                           delta = theta[2],
+                           x      = data$x,
+                           y      = data$y)
+  
+  grad <- apply(attr(aux,"gradient"),2,sum)
+  
+  grad
+}
+
+negloglik_hess_3 <- function(theta, data = dataQ2F){
+  
+   aux  <- negloglik_deriv_3(theta = theta[1],
+                           delta = theta[2],
+                           x      = data$x,
+                           y      = data$y)
+  
+  # Able to sum over individual sample hessians by linearity of partial differentiation
+  apply(attr(aux,"hessian"),c(2,3),sum)
+}
+```
+
+Then by utilising fit_optim from the Labs we can randomly pick 200 starting points and attempt to find the MLE from each of those 200 starting points. As particular starting points have not been computed, 2 has been selected as the starting value for each parameter, but ensuring the standard deviation is high enough to find potentially obscure minimum points. An SD and N this large should ensure the global minimum is found.
+
+```{r, warnings=FALSE, message=FALSE}
+### Optimisation Logic ###
+
+dataQ2F <-data.frame(dataQ2)
+
+fit_full <-fit_optim(par      = c(2,2,2),
+                    fn        = negloglik_fn_full,
+                    gr        = negloglik_gr_full,
+                    data      = dataQ2F,
+                    method    = "BFGS",
+                    hessian   = T,
+                    sd        =  3*c(1,1,1),
+                    N_samples = 200)
+
+fit_1 <-fit_optim(par       = 2,
+                  fn        = negloglik_fn_1,
+                  gr        = negloglik_gr_1,
+                  data      = dataQ2F,
+                  method    = "BFGS",
+                  hessian   = T,
+                  sd        =  3,
+                  N_samples = 200)
+
+fit_2 <-fit_optim(par       = c(2,2),
+                  fn        = negloglik_fn_2,
+                  gr        = negloglik_gr_2,
+                  data      = dataQ2F,
+                  method    = "BFGS",
+                  hessian   = T,
+                  sd        =  3*c(1,1),
+                  N_samples = 200)
+
+fit_3 <-fit_optim(par  = c(2,2),
+                  fn      = negloglik_fn_3,
+                  gr      = negloglik_gr_3,
+                  data    = dataQ2F,
+                  method  = "BFGS",
+                  hessian = T,
+                  sd     =   2*c(1,1),
+                  N_samples = 200)
+
+```
+
+It's important to make sure that the convergence of our MLE hasn't ended early. An absolute tolerance of $\epsilon_{abs} = 10^{-5}$ is desired, so the gradients must all be at least that small;
+
+```{r}
+norm(negloglik_gr_full(fit_full$par, dataQ2) , type="2")
+
+norm(negloglik_gr_1(fit_1$par, dataQ2) , type="2")
+
+norm(negloglik_gr_2(fit_2$par, dataQ2) , type="2")
+
+norm(negloglik_gr_2(fit_2$par, dataQ2) , type="2")
+```
+
+The gradients are sufficiently small, so we are adequately close to the true MLE value, and we can therefore continue. 
+
+The solutions are then formatted into the correct format. We have not un-reparameterised the solutions so this will be corrected shortly. Furthermore, the NIC for each MLE has not been computed yet, so those are temporarily set to zero .  
+
+
+```{r}
+### Store variables ###
+P21_optim_full <- list(
+  mle = fit_full$par,
+  negloglik = fit_full$value, 
+  gradient = negloglik_gr_full(fit_full$par, data=dataQ2),
+  hessian = negloglik_hess_full(fit_full$par, data=dataQ2),
+  NIC = 0
+)
+
+P21_optim_1 <- list(
+  mle = fit_1$par,
+  negloglik = fit_1$value,
+  gradient = negloglik_gr_1(fit_1$par, data=dataQ2),
+  hessian = negloglik_hess_1(fit_1$par, data=dataQ2),
+  NIC = 0
+)
+
+P21_optim_2 <- list(
+  mle = fit_2$par,
+  negloglik = fit_2$value, 
+  gradient = negloglik_gr_2(fit_2$par, data=dataQ2),
+  hessian = negloglik_hess_2(fit_2$par, data=dataQ2),
+  NIC = 0
+)
+
+P21_optim_3 <- list(
+  mle = fit_3$par,
+  negloglik = fit_3$value, 
+  gradient = negloglik_gr_3(fit_3$par, data=dataQ2),
+  hessian = negloglik_hess_3(fit_3$par, data=dataQ2),
+  NIC = 0
+)
+
+```
+
+To unparameterise the values for the MLE the respective transformations are applied for each parameter defined at the start of Q2, to get the original parameters that are restricted in the desired way;
+
+```{r}
+### Reparameterise ### 
+
+ ## Full Model     ##
+par_full_theta1       <- exp(P21_optim_full$mle[1]) 
+par_full_theta2       <- exp(P21_optim_full$mle[2]) - par_full_theta1
+par_full_theta3       <- exp(P21_optim_full$mle[3])
+
+P21_optim_full$mle[1] <- par_full_theta1
+P21_optim_full$mle[2] <- par_full_theta2
+P21_optim_full$mle[3] <- par_full_theta3
+
+
+ ## Model 1        ##
+par_1_theta1          <- 1/(1 + exp(-P21_optim_1$mle[1]))
+
+P21_optim_1$mle[1]    <- par_1_theta1
+
+
+ ## Model 2        ##
+par_2_theta2          <- exp(P21_optim_2$mle[1]) 
+par_2_tau2            <- exp(P21_optim_2$mle[2]) - exp(P21_optim_2$mle[1])
+
+P21_optim_2$mle[1]    <- par_2_theta2
+P21_optim_2$mle[2]    <- par_2_tau2
+
+
+ ## Model 3        ##
+par_3_theta3          <- 1/(1 + exp(-P21_optim_3$mle[1]))
+par_3_delta3          <- exp(P21_optim_3$mle[2])
+
+P21_optim_3$mle[1]    <- par_3_theta3
+P21_optim_3$mle[2]    <- par_3_delta3
+
+
+### Check model outputs ###
+P21_optim_full
+P21_optim_1
+P21_optim_2
+P21_optim_3
+
+```
+
+The model outputs look reasonable, there are no NAs, it all seems good.
+
+Next a function is defined to quickly evaluate the gradient of all the functions $f$ from each family. This will be used to compute, 
+
+$$\widehat{\mathcal{K}(\theta^{\dagger})} = \sum^n_{i=1} \left[\nabla_\theta \log f(y_i | \widehat{\theta}) \right] \left[\nabla_\theta \log f(y_i | \hat{\theta}) \right]^T$$
+for the NIC calculation later.
+
+```{r}
+derivlogf_full <- function(data = 1){
+  
+  aux  <- -negloglik_deriv_full(alpha = log(P21_optim_full$mle[1]),
+                          beta = log(P21_optim_full$mle[1] + P21_optim_full$mle[2]),
+                          phi = log(P21_optim_full$mle[3]),
+                          x      = data$x,
+                          y      = data$y)
+  
+ as.numeric(attributes(aux)$gradient)
+}
+
+derivlogf_1 <- function(data = 1){
+  
+  aux  <- -negloglik_deriv_1(theta = log(P21_optim_1$mle[1]/(1 - P21_optim_1$mle[1])),
+                          x      = data$x,
+                          y      = data$y)
+  
+  as.numeric(attributes(aux)$gradient)
+}
+
+derivlogf_2 <- function(data = 1){
+  
+  aux  <- -negloglik_deriv_2(theta = log(P21_optim_2$mle[1]),
+                             tau = log(P21_optim_2$mle[1] + P21_optim_2$mle[2]),
+                          x      = data$x,
+                          y      = data$y)
+  
+  as.numeric(attributes(aux)$gradient)
+  
+}
+
+derivlogf_3 <- function(data = 1){
+  
+  aux  <- -negloglik_deriv_3(theta = log(P21_optim_3$mle[1]/(1 - P21_optim_3$mle[1])),
+                             delta = log(P21_optim_3$mle[2]),
+                          x      = data$x,
+                          y      = data$y)
+  
+  as.numeric(attributes(aux)$gradient)
+}
+
+
+```
+
+Recall the observed Fisher information matrix $\left( \widehat{\mathcal{J}(\theta^*)} \right)$  is the Hessian of the Negative Log-likelihood, and that the NIC of a function is defined to be:
+
+$$NIC = 2\left(-\ell(\widehat{\boldsymbol\theta}(\boldsymbol{y})|\boldsymbol{y}) + d_{NIC}(\boldsymbol{y})) \right)$$
+where $d_{NIC}(\boldsymbol{y}) = \text{trace} \left(\left[\widehat{\mathcal{J}(\theta^*)} \right]^{-1} \widehat{\mathcal{K}(\theta^{\dagger})} \right)$
+
+Using all these formulas the NIC of each model is computed so the best model (according to the NIC) can be found.
+
+
+```{r}
+### NIC Logic ###
+obsfisher_full <- P21_optim_full$hessian
+obsfisher_1    <- P21_optim_1$hessian
+obsfisher_2    <- P21_optim_2$hessian
+obsfisher_3    <- P21_optim_3$hessian
+
+#Defining empty matrices 
+Khat_full = matrix(0,3,3)
+Khat_1 = 0
+Khat_2 = matrix(0,2,2)
+Khat_3 = matrix(0,2,2)
+
+#Computing all the Khats
+for(i in (1:1000)){
+  Khat_full = Khat_full + (derivlogf_full(dataQ2[i,])) %*% t(derivlogf_full(dataQ2[i,]))
+  
+  Khat_1 = Khat_1 + (derivlogf_1(dataQ2[i,])) %*% t(derivlogf_1(dataQ2[i,]))
+                                                       
+  Khat_2 = Khat_2 + (derivlogf_2(dataQ2[i,])) %*% t(derivlogf_2(dataQ2[i,]))
+
+  Khat_3 = Khat_3 + (derivlogf_3(dataQ2[i,])) %*% t(derivlogf_3(dataQ2[i,]))
+}
+
+
+dnic_full = sum(diag( solve(obsfisher_full) %*% Khat_full ))
+dnic_1 = sum(diag( solve(obsfisher_1) %*% Khat_1 ))
+dnic_2 = sum(diag( solve(obsfisher_2) %*% Khat_2 ))
+dnic_3 = sum(diag( solve(obsfisher_3) %*% Khat_3 ))
+
+#Allocating all the NICs
+
+P21_optim_full$NIC <- 2*(P21_optim_full$negloglik + dnic_full)
+P21_optim_1$NIC    <- 2*(P21_optim_1$negloglik + dnic_1)
+P21_optim_2$NIC    <- 2*(P21_optim_2$negloglik + dnic_2)
+P21_optim_3$NIC    <- 2*(P21_optim_3$negloglik + dnic_3)
+
+
+P21_optim_full$NIC
+P21_optim_1$NIC
+P21_optim_2$NIC
+P21_optim_3$NIC
+
+```
+
+The most desirable NIC is the smallest, and that is evidently the NIC of the full model family $\mathcal{F}_{full}$. This makes sense as one extra parameter is not enough to lower its NIC, however that extra parameter allows for a much better fit than the other models.
+
+
+## Question 2.2 
+
+Using the assumption that the models are correctly specified makes plotting confidence intervals simple. Utilising Proposition 3.2 "Alternative large sample properties of the MLE": 
+
+$$\left[ \widehat{\mathcal{J}(\theta^*)} \right]^{1/2}\left( \hat{\theta}_n(\mathcal{Y}) - \theta^* \right) \rightarrow N(\boldsymbol 0_{p+m}, \boldsymbol I_{p+m}) \quad \text{as} \quad n \rightarrow \infty$$ 
+
+So, the Observed Fisher Information matrix can be used to make intervals with accuracy, as $n = 1000$ is sufficiently large.
+
+However, it is important to remember that we want confidence intervals not just for $\theta^*$, but for $\mu(\theta^*)$. Proposition 3.4 "Alternative large sample properties of the transformed MLE", can be used to find new observed Fisher Information Matrix for a transformed MLE, where $\mu$ is the transformation.
+
+For this we need to compute the Jacobian, $J_{\mu}$, of $\mu$ for all the families. However the families have different parameter dimensions, so 4 Jacobians must be computed, which are as follows:
+
+For $\mathcal{F}_{full}$ which has 3 parameters, but where $\mu$ depends on 2 parameters:
+
+$$J_{\mu}(\alpha,\beta,\phi) = \left(-\frac{1}{(\alpha + \beta x)^2} \ , \ -\frac{x}{(\alpha + \beta x)^2} \ , \ 0 \right)$$
+
+The 0 is because $\mu$ does not depend on $\phi$. 
+
+The jacobian of $\mu$ for $\mathcal{F}_{1}$, which has only 1 parameter, where $\mu$ also depends on 1 parameter is:
+
+$$J_{\mu}(\theta_1) = \left( \frac{2\theta_1 x -1}{(\theta_1 - \theta_1^2 x)^2} \right)$$
+
+Similarly, for $\mathcal{F}_{2}$ with 2 parameters, where $\mu$ also depends on 2 parameter:
+
+$$J_{\mu}(\theta_2 , \tau_2) = \left(-\frac{1}{(\theta_2 + \tau_2 x)^2} \ , \ -\frac{x}{(\theta_2 + \tau_2 x)^2}\right)$$
+
+Finally, the jacobian of $\mu$ for $\mathcal{F}_{3}$ with 2 parameters, where $\mu$ only depends on 1 parameter:
+
+$$J_{\mu}(\theta_3 , \delta_3) = \left(-\frac{1 - 2\theta_3 x}{(\theta_3 - \theta_3^2 x)^2} \ , \ 0\right)$$
+The zero is because $\mu$ does not depend on $\delta_3$.
+
+In R these are as follows:
+
+```{r}
+# use the following matrices to place the CI limits and estimates
+
+n_grid     <- 1000
+x          <- seq(0,1,length=n_grid)
+P22_bands_1 <- P22_bands_2 <-
+  P22_bands_3 <- P22_bands_full <- matrix(NA,nrow=n_grid,ncol=3)
+colnames(P22_bands_1) <- colnames(P22_bands_2) <-
+  colnames(P22_bands_3) <- colnames(P22_bands_full) <- c("lower","est","upper")
+
+
+muQ2 <- function(alpha, beta, x){
+  1/(alpha + beta * x)
+}
+
+jac_muQ2_F_Full <- function(alpha,beta, x){
+  matrix(c(-1/((alpha + beta*x)^2) , -x/((alpha + beta*x)^2),0),nrow=1, ncol=3)
+}
+
+jac_muQ2_F_1 <- function(theta1, x){
+  -(1 - 2*theta1*x)/((theta1 - (theta1^2)*x)^2)
+}
+
+jac_muQ2_F_2 <- function(theta2, tau2, x){
+  matrix(c(-1/((theta2 + tau2*x)^2), -x/(theta2 + tau2*x)^2), nrow=1, ncol=2)
+}
+
+jac_muQ2_F_3 <- function(theta3 , x){
+  matrix(c(-(1 - 2*theta3*x)/((theta3 - (theta3^2)*x)^2), 0),nrow=1, ncol=2)
+}
+
+```
+
+Using these Jacobians we can compute 95% percent confidence bands which are computed and plotted below: 
+
+
+```{r}
+
+for (i in 1:n_grid){
+  # Jacobians and Std errors for each model
+  J_full  <- jac_muQ2_F_Full(P21_optim_full$mle[1], P21_optim_full$mle[2], x[i])
+  se_full <- sqrt(J_full %*% solve(P21_optim_full$hessian) %*% t(J_full))
+  
+  J_1     <- jac_muQ2_F_1(P21_optim_1$mle[1], x[i])
+  se_1    <- sqrt(J_1 %*% solve(P21_optim_1$hessian) %*% t(J_1))
+  
+  J_2     <- jac_muQ2_F_2(P21_optim_2$mle[1], P21_optim_2$mle[2], x[i])
+  se_2    <- sqrt(J_2 %*% solve(P21_optim_2$hessian) %*% t(J_2))
+  
+  J_3     <- jac_muQ2_F_3(P21_optim_3$mle[1], x[i])
+  se_3    <- sqrt(J_3 %*% solve(P21_optim_3$hessian) %*% t(J_3))
+    
+    #Full model confidence bands
+    
+  P22_bands_full[i,1] <- muQ2(P21_optim_full$mle[1],P21_optim_full$mle[2],x[i])-1.96*se_full
+  P22_bands_full[i,2] <- muQ2(P21_optim_full$mle[1], P21_optim_full$mle[2], x[i])
+  P22_bands_full[i,3] <- muQ2(P21_optim_full$mle[1],P21_optim_full$mle[2], x[i])+1.96*se_full
+  
+    # Model 1 confidence bands
+  
+  P22_bands_1[i,1] <- muQ2(P21_optim_1$mle[1], -(P21_optim_1$mle[1])^2,x[i])-1.96*se_1
+  P22_bands_1[i,2] <- muQ2(P21_optim_1$mle[1], -(P21_optim_1$mle[1])^2, x[i])
+  P22_bands_1[i,3] <- muQ2(P21_optim_1$mle[1], -(P21_optim_1$mle[1])^2,x[i])+1.96*se_1
+  
+  
+    # Model 2 confidence bands
+  
+  P22_bands_2[i,1] <- muQ2(P21_optim_2$mle[1], P21_optim_2$mle[2],x[i])-1.96*se_2
+  P22_bands_2[i,2] <- muQ2(P21_optim_2$mle[1], P21_optim_2$mle[2], x[i])
+  P22_bands_2[i,3] <- muQ2(P21_optim_2$mle[1], P21_optim_2$mle[2], x[i])+1.96*se_2
+  
+    # Model 3 confidence bands
+  
+  P22_bands_3[i,1] <- muQ2(P21_optim_3$mle[1], -(P21_optim_3$mle[1])^2,x[i])-1.96*se_3
+  P22_bands_3[i,2] <- muQ2(P21_optim_3$mle[1], -(P21_optim_3$mle[1])^2, x[i])
+  P22_bands_3[i,3] <- muQ2(P21_optim_3$mle[1], -(P21_optim_3$mle[1])^2,x[i])+1.96*se_3
+}
+
+```
+
+$\mu(\alpha^* , \beta^*,x)$ is now plotted, (for all the respective parameters of each model), along side the 95% asymptotic confidence bands;
+
+The plot for $\mathcal{F}_{full}$ is:
+
+```{r}
+plot(dataQ2$x, dataQ2$y,
+     main = "Scatterplot of data with the full model MLE mean and a 95% mean 
+     confidence interval overlayed",
+     xlab = "x", ylab="y",xlim = c(0,1), col="black", cex=0.9)
+
+lines(x, P22_bands_full[,1], col="red", lty=5) # Lower confidence bound
+lines(x, P22_bands_full[,2], col="red") # Estimate
+lines(x, P22_bands_full[,3], col="red", lty=5) # Upper confidence bound
+
+```
+
+Then for  $\mathcal{F}_{1}$:
+
+```{r}
+plot(dataQ2$x, dataQ2$y,
+     main = "Scatterplot of data with the model 1 MLE mean and a 95% mean 
+     confidence interval overlayed",
+     xlab = "x", ylab="y",  xlim = c(0,1), col="black")
+
+lines(x, P22_bands_1[,1], col="red", lty=5) # Lower confidence bound
+lines(x, P22_bands_1[,2], col="red") # Estimate
+lines(x, P22_bands_1[,3], col="red", lty=5) # Upper confidence bound
+```
+
+
+```{r}
+plot(dataQ2$x, dataQ2$y,
+     main = "Scatterplot of data with the model 2 MLE mean and a 95% mean 
+     confidence interval overlayed",
+     xlab = "x", ylab="y", xlim = c(0,1),col="black")
+
+
+lines(x, P22_bands_2[,1], col="red", lty=5) # Lower confidence bound
+lines(x, P22_bands_2[,2], col="red") # Estimate
+lines(x, P22_bands_2[,3], col="red", lty=5) # Upper confidence bound
+```
+
+
+
+```{r}
+plot(dataQ2$x, dataQ2$y,
+     main = "Scatterplot of data with the model 3 MLE mean and a 95% mean 
+     confidence interval overlayed",
+     xlab = "x", ylab="y",xlim = c(0,1), col="black")
+
+
+lines(x, P22_bands_3[,1], col="red", lty=5) # Lower confidence bound
+lines(x, P22_bands_3[,2], col="red") # Estimate
+lines(x, P22_bands_3[,3], col="red", lty=5) # Upper confidence bound
+```
+
+
+
+## Question 2.3
+
+The idea behind finding the asymptotic confidence intervals when the models are misspecified is very similar to when they're correctly specified, except when misspecified there is a different asymptotic variance. From Proposition 3.7 "Alternative asymptotic distribution of the MLE for misspecified models":
+
+Assume that $f_*(\boldsymbol y) \notin \mathcal{F}$. Let $\widehat{\boldsymbol{\theta}}(\mathcal Y)$ be the maximum likelihood estimator random variable based on $\mathcal{F}$, then
+
+$$\left\{ \left[ \widehat{\mathcal{J}(\theta^*)} \right]^{-1} \widehat{\mathcal{K}(\theta^{\dagger})}  \left[ \widehat{\mathcal{J}(\theta^*)} \right]^{-1} \right\}^{-1/2}(\widehat{\theta_n}(\mathcal Y ) - \theta^{\dagger}) \rightarrow N(\boldsymbol 0_{p+m}, \boldsymbol I_{p+m}) \quad \text{as} \quad n \rightarrow \infty$$ 
+This is an extension to Proposition 3.2 and hence the same process can be used as Q2.2, only this time with a different asymptotic variance of:
+$$ \left[ \widehat{\mathcal{J}(\theta^*)} \right]^{-1} \widehat{\mathcal{K}(\theta^{\dagger})}  \left[ \widehat{\mathcal{J}(\theta^*)} \right]^{-1}$$
+
+Here the variance is computed, using the formula above, and then transformed using the jacobians calculated in Q2.2. Then the standard error can be computed and hence the confidence intervals can be created in the same fashion as Q2.2.
+```{r Q2.3}
+# use the following matrices to place the CI limits and estimates
+
+n_grid     <- 1000 
+x          <- seq(0,1,length=n_grid)
+P23_bands_1 <- P23_bands_2 <- 
+  P23_bands_3 <- P23_bands_full <- matrix(NA,nrow=n_grid,ncol=2)
+colnames(P23_bands_1) <- colnames(P23_bands_2) <- 
+  colnames(P23_bands_3) <- colnames(P23_bands_full) <- c("lower","upper")
+
+
+
+for (i in 1:n_grid){
+  # Jacobians and Std errors for each model
+  Ja_full  <- jac_muQ2_F_Full(P21_optim_full$mle[1], P21_optim_full$mle[2], x[i])
+  asymvar_full <- solve(obsfisher_full) %*% Khat_full %*% solve(obsfisher_full)
+  std_full <- sqrt(Ja_full %*% asymvar_full %*% t(Ja_full))
+  
+  Ja_1     <- jac_muQ2_F_1(P21_optim_1$mle[1], x[i])
+  asymvar_1 <- solve(obsfisher_1) %*% Khat_1 %*% solve(obsfisher_1)
+  std_1    <- sqrt(Ja_1 %*% asymvar_1 %*% t(Ja_1))
+  
+  Ja_2     <- jac_muQ2_F_2(P21_optim_2$mle[1], P21_optim_2$mle[2], x[i])
+  asymvar_2 <- solve(obsfisher_2) %*% Khat_2 %*% solve(obsfisher_2)
+  std_2    <- sqrt(Ja_2 %*% asymvar_2 %*% t(Ja_2))
+  
+  Ja_3     <- jac_muQ2_F_3(P21_optim_3$mle[1], x[i])
+  asymvar_3 <- solve(obsfisher_3) %*% Khat_3 %*% solve(obsfisher_3)
+  std_3    <- sqrt(Ja_3 %*% asymvar_3 %*% t(Ja_3))
+  # print(Ja_3)
+  # print(std_3)
+  
+  # Full Model   
+  P23_bands_full[i,1] <-muQ2(P21_optim_full$mle[1],P21_optim_full$mle[2],x[i])-1.96*std_full
+  P23_bands_full[i,2] <-muQ2(P21_optim_full$mle[1],P21_optim_full$mle[2],x[i])+1.96*std_full
+  
+  # Model 1
+  
+  P23_bands_1[i,1] <- muQ2(P21_optim_1$mle[1],-(P21_optim_1$mle[1])^2,x[i])-1.96*std_1
+  P23_bands_1[i,2] <- muQ2(P21_optim_1$mle[1],-(P21_optim_1$mle[1])^2,x[i])+1.96*std_1
+
+  # Model 2
+  P23_bands_2[i,1] <- muQ2(P21_optim_2$mle[1],P21_optim_2$mle[2],x[i])-1.96*std_2
+  P23_bands_2[i,2] <- muQ2(P21_optim_2$mle[1],P21_optim_2$mle[2],x[i])+1.96*std_2
+   
+
+  # Model 3
+  
+  P23_bands_3[i,1] <- muQ2(P21_optim_3$mle[1],-(P21_optim_3$mle[1])^2,x[i])-1.96*std_3
+  P23_bands_3[i,2] <- muQ2(P21_optim_3$mle[1],-(P21_optim_3$mle[1])^2,x[i])+1.96*std_3
+} 
+
+```
+
+
+Here the plot for $\mathcal{F}_{full}$ is created:
+
+```{r}
+plot(dataQ2$x, dataQ2$y,
+     main = "Scatterplot of data with 95% asymptotic confidence intervals
+     of full model's unknown least-worse mean",
+     xlab = "x", ylab="y", xlim = c(0,1), col="black")
+
+#Confidence bands for mu of theta dagger
+lines(x, P23_bands_full[,1], col="red") # Lower confidence bound
+lines(x, P23_bands_full[,2], col="red") # Upper confidence bound
+
+
+```
+
+A keen eye may notice that this looks incredibly similar to the confidence bands from Q2.2, so we make another plot, but we superimpose the confidence bands from 2.2 into the plot, and zoom in:
+
+```{r}
+plot(dataQ2$x, dataQ2$y,
+     main = "Scatterplot of data with 95% asymptotic confidence intervals
+     of full model's unknown least-worse mean",
+     xlab = "x", ylab="y", xlim = c(0,1), ylim = c(0,6), col="black")
+
+#Confidence bands for mu of theta dagger
+lines(x, P23_bands_full[,1], col="red") # Lower confidence bound
+lines(x, P23_bands_full[,2], col="red") # Upper confidence bound
+
+#confidence intervals from Q2.2
+lines(x, P22_bands_full[,1], col="steelblue") # Lower confidence bound
+lines(x, P22_bands_full[,3], col="steelblue") # Upper confidence bound
+
+```
+
+They are in fact practically identical! Spots of red can just about be seen peeking out from behind the blue lines, but it's hard to see. Recall that the asymptotic variances being equal between Q2.2 and Q2.3 is a necessary but not sufficient condition for the model being correctly specified. However without more information this can't be said for sure.
+
+Moving onto model 1:
+
+```{r}
+plot(dataQ2$x, dataQ2$y,
+     main = "Scatterplot of data with 95% asymptotic confidence intervals
+     of model 1's unknown least-worse mean",
+     xlab = "x", ylab="y", xlim = c(0,1),col="black")
+
+#Confidence bands for mu of theta dagger
+lines(x, P23_bands_1[,1], col="red") # Lower confidence bound
+lines(x, P23_bands_1[,2], col="red") # Upper confidence bound
+
+
+```
+
+Similarly to $\mathcal{F}_{full}$, these bands appear very similar to the bands computed in Q2.2, so we super impose the bands from Q2.2 and zoom in: 
+
+```{r}
+plot(dataQ2$x, dataQ2$y,
+     main = "Scatterplot of data with 95% asymptotic confidence intervals
+     of model 1's unknown least-worse mean",
+     xlab = "x", ylab="y", xlim = c(0,1), ylim= c(0,10),col="black")
+
+#Confidence bands for mu of theta dagger
+lines(x, P23_bands_1[,1], col="red") # Lower confidence bound
+lines(x, P23_bands_1[,2], col="red") # Upper confidence bound
+
+#confidence intervals from Q2.2
+lines(x, P22_bands_1[,1], col="steelblue") # Lower confidence bound
+lines(x, P22_bands_1[,3], col="steelblue") # Upper confidence bound
+```
+
+It seems unlikely that Model 1 is the model the data is from, and from this plot we can see the Variances do not match, so this model 1 is almost certainly misspecified we cannot confidently say this due to these matching confidence bands.
+
+This process is repeated for model 2:
+
+```{r}
+plot(dataQ2$x, dataQ2$y,
+     main = "Scatterplot of data with 95% asymptotic confidence intervals
+     of model 2's unknown least-worse mean",
+     xlab = "x", ylab="y", xlim = c(0,1), col="blue")
+
+#Confidence bands for mu of theta dagger
+lines(x, P23_bands_2[,1], col="red") # Lower confidence bound
+lines(x, P23_bands_2[,2], col="red") # Upper confidence bound
+
+```
+
+Comparing to our answer from Q2.2:
+
+```{r}
+plot(dataQ2$x, dataQ2$y,
+     main = "Scatterplot of data with 95% asymptotic confidence intervals
+     of model 2's unknown least-worse mean",
+     xlab = "x", ylab="y", xlim = c(0,1), ylim = c(0,9), col="blue")
+
+#Confidence bands for mu of theta dagger
+lines(x, P23_bands_2[,1], col="red") # Lower confidence bound
+lines(x, P23_bands_2[,2], col="red") # Upper confidence bound
+
+#confidence intervals from Q2.2
+##We will get rid of these but wanted to see how similar they are 
+lines(x, P22_bands_2[,1], col="steelblue") # Lower confidence bound
+lines(x, P22_bands_2[,3], col="steelblue") # Upper confidence bound
+
+```
+
+They're incredibly similar but towards the end the differences become apparent. It is unlikely the data came from model 2 then.
+
+Now for $\mathcal{F}_3$:
+
+```{r}
+plot(dataQ2$x, dataQ2$y,
+     main = "Scatterplot of data with 95% asymptotic confidence intervals
+     of model 3's unknown least-worse mean",
+     xlab = "x", ylab="y", xlim = c(0,1), col="blue")
+
+#Confidence bands for mu of theta dagger
+lines(x, P23_bands_3[,1], col="red") # Lower confidence bound
+lines(x, P23_bands_3[,2], col="red") # Upper confidence bound
+
+```
+
+Now comparing it to Q2.2: 
+
+```{r}
+plot(dataQ2$x, dataQ2$y,
+     main = "Scatterplot of data with 95% asymptotic confidence intervals
+     of model 3's unknown least-worse mean",
+     xlab = "x", ylab="y", xlim = c(0,1), ylim=c(0,10), col="blue")
+
+#Confidence bands for mu of theta dagger
+lines(x, P23_bands_3[,1], col="red") # Lower confidence bound
+lines(x, P23_bands_3[,2], col="red") # Upper confidence bound
+
+#confidence intervals from Q2.2
+##We will get rid of these but wanted to see how similar they are 
+lines(x, P22_bands_3[,1], col="steelblue") # Lower confidence bound
+lines(x, P22_bands_3[,3], col="steelblue") # Upper confidence bound
+
+
+```
+These are very different values of variance, so we can conclude the data does not come from model 3, and model 3 is misspecified.
+
+## Question 2.4
+
+```{r}
+
+
+# We define f_full here because eval gives grief
+f_star <- function(x, y){
+  
+  ## True params
+  alpha_star <- 2/3
+  beta_star <- -1/3
+  phi_star <- 1/2
+  
+  # Get true gamma params
+  mu_star <- 1 / (alpha_star + beta_star*x)
+  a_star <- 1/phi_star
+  b_star <- mu_star * phi_star
+  
+  # Return exponential of negative of negative loglikelihood
+  exp(-lgamma(a_star) - a_star*log(b_star) + (a_star - 1)*log(y) - y/b_star)
+}
+
+
+### Model 1 ###
+  
+
+nlogf_1 <- function(theta=1, x, y){
+  ## Reparameterise 
+  theta_r <- 1/(1+exp(-theta))
+  
+  ## Get into given form
+  alpha_r <- theta_r
+  beta_r <- -theta_r^2
+  phi_r <- exp(theta_r)
+  
+  # Get gamma params
+  mu_1 <- 1 / (alpha_r + beta_r*x)
+  a_1 <- 1/phi_r
+  b_1 <- mu_1 * phi_r
+  
+  # Return negative loglikelihood
+  lgamma(a_1) + a_1*log(b_1) - (a_1 - 1)*log(y) + y/b_1
+}
+
+
+KL_1 <- function(theta=1, data=dataQ2F){
+  N <- length(data$x)
+  KL_samples <- rep(NA, N) # KLs at points (x_i, y_i)
+  
+  for (i in 1:N) {
+    integrand <- function(y) {
+      # Get f_star(y | x), x a vector y a singleton
+      f_s <- f_star(data$x[i], y)
+      
+      # Get vector of loglikelihood values over each x sample for our y
+      loglik <- (-1) * nlogf_1(theta, data$x[i], y)
+      
+      f_s * (log(f_s) - loglik)
+    }
+    
+    # try-except logic for integration, occasionally doesn't converge in a reasonable time
+    res <- try(integrate(integrand, lower=0, upper=100, abs.tol=1e-2), silent=TRUE)
+    
+    if (inherits(res, "try-error")) {
+      if (i == 1) {
+        # No previous sample! 
+        KL_samples[i] <- NA
+      } else {
+        # Previous sample should be fairly close, x's clustered
+        KL_samples[i] <- KL_samples[i-1] 
+      }
+    } else {
+      # Integration succeeded :)
+      KL_samples[i] <- res$value
+    }
+  }
+
+  # Sum over all samples
+  sum(KL_samples)
+}
+
+
+
+KL_gr_1<-function(theta=1){
+
+  grad(KL_1,theta)
+
+}
+
+
+### Model 2 ###
+
+
+nlogf_2 <- function(theta=c(1,1), x, y){
+  ## Reparameterise 
+  theta_r <- exp(theta[1])
+  tau_r <- exp(theta[2]) - exp(theta[1])
+  
+  ## Get into given form
+  alpha_r <- theta_r
+  beta_r <- -theta_r^2
+  phi_r <- exp(theta_r)
+  
+  # Get gamma params
+  mu_2 <- 1 / (alpha_r + beta_r*x)
+  a_2 <- 1/phi_r
+  b_2 <- mu_2 * phi_r
+  
+  # Return negative loglikelihood
+  lgamma(a_2) + a_2*log(b_2) - (a_2 - 1)*log(y) + y/b_2
+}
+
+
+KL_2 <- function(theta=1, data=dataQ2F){
+  N <- length(data$x)
+  KL_samples <- rep(NA, N) # KLs at points (x_i, y_i)
+  
+  for (i in 1:N) {
+    integrand <- function(y) {
+      # Get f_star(y | x), x a vector y a singleton
+      f_s <- f_star(data$x[i], y)
+      
+      # Get vector of loglikelihood values over each x sample for our y
+      loglik <- (-1) * nlogf_2(theta, data$x[i], y)
+      
+      f_s * (log(f_s) - loglik)
+    }
+    
+    # try-except logic for integration, occasionally doesn't converge in a reasonable time
+    res <- try(integrate(integrand, lower=0, upper=100, abs.tol=1e-2), silent=TRUE)
+    
+    if (inherits(res, "try-error")) {
+      if (i == 1) {
+        # No previous sample! 
+        KL_samples[i] <- NA
+      } else {
+        # Previous sample should be fairly close, x's clustered
+        KL_samples[i] <- KL_samples[i-1] 
+      }
+    } else {
+      # Integration succeeded :)
+      KL_samples[i] <- res$value
+    }
+  }
+
+  # Sum over all samples
+  sum(KL_samples)
+}
+
+KL_gr_2<-function(theta=c(0,0)){
+  
+  grad(KL_2,theta)
+
+}
+
+
+### Model 3 ###
+
+
+nlogf_3 <- function(theta=c(1,1), x, y){
+  ## Reparameterise 
+  theta_r <- 1/(1+exp(-theta[1]))
+  delta_r <- exp(theta[2])
+  
+  ## Get into given form
+  alpha_r <- theta_r
+  beta_r <- -theta_r^2
+  phi_r <- delta_r
+  
+  # Get gamma params
+  mu_3 <- 1 / (alpha_r + beta_r*x)
+  a_3 <- 1/phi_r
+  b_3 <- mu_3 * phi_r
+  
+  # Return negative loglikelihood
+  lgamma(a_3) + a_3*log(b_3) - (a_3 - 1)*log(y) + y/b_3
+}
+
+
+KL_3 <- function(theta=1, data=dataQ2F){
+  N <- length(data$x)
+  KL_samples <- rep(NA, N) # KLs at points (x_i, y_i)
+  
+  for (i in 1:N) {
+    integrand <- function(y) {
+      # Get f_star(y | x), x a vector y a singleton
+      f_s <- f_star(data$x[i], y)
+      
+      # Get vector of loglikelihood values over each x sample for our y
+      loglik <- (-1) * nlogf_3(theta, data$x[i], y)
+      
+      f_s * (log(f_s) - loglik)
+    }
+    
+    # try-except logic for integration, occasionally doesn't converge in a reasonable time
+    res <- try(integrate(integrand, lower=0, upper=100, abs.tol=1e-2), silent=TRUE)
+    
+    if (inherits(res, "try-error")) {
+      if (i == 1) {
+        # No previous sample! 
+        KL_samples[i] <- NA
+      } else {
+        # Previous sample should be fairly close, x's clustered
+        KL_samples[i] <- KL_samples[i-1] 
+      }
+    } else {
+      # Integration succeeded :)
+      KL_samples[i] <- res$value
+    }
+  }
+
+  # Sum over all samples
+  sum(KL_samples)
+}
+
+
+KL_gr_3<-function(theta=c(0,0)){
+  
+  grad(KL_3,theta)
+
+}
+```
+
+
+
+```{r}
+# Kullback Leibler is convex, only need to optimise once. See reference 1. 
+
+KL_fit_1 <- optim(par = 0,
+                  fn = KL_1,
+                  gr = KL_gr_1,
+                  method = "BFGS"
+)
+
+KL_fit_2 <- optim(par = c(0,0),
+                  fn = KL_2,
+                  gr = KL_gr_2,
+                  method = "BFGS"
+)
+
+KL_fit_3 <- optim(par = c(0,0),
+                  fn = KL_3,
+                  gr = KL_gr_3,
+                  method = "BFGS"
+)
+
+P24_optim_1 <- list(
+  par = 1/(1+exp(-KL_fit_1$par)), # reparameterise
+  val = KL_1(KL_fit_1$par),
+  gr  = KL_gr_1(KL_fit_1$par)
+)
+
+P24_optim_2 <- list(
+  par = c(exp(KL_fit_2$par[1]), exp(KL_fit_2$par[2]) - exp(KL_fit_2$par[2])), # reparameterise
+  val = KL_2(KL_fit_2$par),
+  gr  = KL_gr_2(KL_fit_2$par)
+)
+
+P24_optim_3 <- list(
+  par = c(1/(1+exp(-KL_fit_3$par[1])), exp(KL_fit_3$par[2])), # reparameterise
+  val = KL_1(KL_fit_1$par),
+  gr  = KL_gr_1(KL_fit_1$par)
+)
+
+P24_optim_1
+P24_optim_2
+P24_optim_3
+```
+
+
+
+```{r}
+plot(dataQ2$x, dataQ2$y,
+     main = "Scatterplot of data with the model 1 least-worse mean estimate",
+     xlab = "x", ylab="y", xlim = c(0,1), col="blue")
+
+lines(x, muQ2(P24_optim_1$par, -(P24_optim_1$par)^2, x), col="black") #Mu
+lines(x, muQ2(2/3, -1/3, x), col="red")
+legend("topright", legend = c("Least Worst Mean", "True Mean"), 
+       col = c("black", "red"), lty = 1, bty = "n")
+```
+
+
+
+```{r}
+plot(dataQ2$x, dataQ2$y,
+     main = "Scatterplot of data with the model 2 least-worse mean estimate",
+     xlab = "x", ylab="y", xlim = c(0,1), col="blue")
+
+lines(x, muQ2(P24_optim_2$par[1], P24_optim_2$par[2], x), col="black") 
+lines(x, muQ2(2/3, -1/3, x), col="red")
+legend("topright", legend = c("Least Worst Mean", "True Mean"), 
+       col = c("black", "red"), lty = 1, bty = "n")
+
+```
+
+
+
+```{r}
+plot(dataQ2$x, dataQ2$y,
+     main = "Scatterplot of data with the model 3 least-worse mean estimate",
+     xlab = "x", ylab="y", xlim = c(0,1), col="blue")
+
+lines(x, muQ2(P24_optim_3$par[1], -(P24_optim_3$par[2])^2, x), col="black") #Mu
+lines(x, muQ2(2/3, -1/3, x), col="red")
+legend("topright", legend = c("Least Worst Mean", "True Mean"), 
+       col = c("black", "red"), lty = 1, bty = "n")
+
+```
+
+
+
+## Question 2.5
+
+For this question we use the PDF of Gamma in the form of an exponential family (From Example 3.8 in the lecture notes) to define $f$ as:
+
+$$
+f(y|\mu (\alpha, \beta,x),\theta_{p+1}) = 
+\exp \left( - \theta_{p+1} \frac{y}{\mu(\alpha, \beta,x)} + (\theta_{p+1} - 1)\log y - \Phi(\mu(\alpha, \beta,x) , \theta_{p+1}) \right)
+$$
+Where
+
+$$
+\Phi(\mu(\alpha, \beta,x) , \theta_{p+1}) = \theta_{p+1} \log( \mu(\alpha, \beta,x)) + \log \Gamma(\theta_{p+1}) - \theta_{p+1} \log(\theta_{p+1})
+$$
+
+The lectures notes (Example 3.8) tells us that $\theta_{p+1}$ is the shape parameter of the Gamma distribution. We've already worked out that the shape parameter $a = \frac{1}{\phi}$, so
+
+$$
+\theta_{p+1} = \frac{1}{\phi}
+$$
+
+This means:
+
+$$
+f(y|\mu (\alpha, \beta,x),\frac{1}{\phi}) = 
+\exp \left(- \frac{1}{\phi} \frac{y}{\mu(\alpha, \beta,x)} + (\frac{1}{\phi} - 1)\log y - \Phi(\mu(\alpha, \beta,x) , \frac{1}{\phi}) \right)
+$$
+
+Using this, the idea is to start with a model with many parameters, $\left( \theta_1 , \theta_2, \theta_3, \theta_4, \theta_5 \right)$. We then use R to find the MLE of this 5 parameter model. Then we can simply substitute the values of the MLE for all parameters except $\theta_1$ to hopefully have a significantly improved 1-dimensional model. We will start with the 5 dimensional model of:
+
+$$
+f(y|\mu (\alpha, \beta,x),\phi) = \frac{y^{\frac{1 - \phi}{\phi}} \exp(\frac{-y}{\mu \phi})}{\Gamma(\frac{1}{\phi})(\mu \phi)^{1/\phi}} 
+$$
+
+But here:
+
+$$ \mu(\theta_1, \theta_2, \theta_3, x) = \frac{1}{\theta_2\theta_1 + \theta_3 \theta_1^{\theta_4} x}$$
+
+and
+
+$$\phi(\theta_1 , \theta_4) = \exp(\theta_5 - \theta_1)$$
+
+Here $\phi > 0 $ for all values of $\boldsymbol{\theta}$ as needed.
+
+Now we can run a fit_optim on this new model to find the values of $\theta_2 , \theta_3, \theta_4$ and $\theta_5$ we want for our 1-dimensional model.
+
+Below we define the new 5 parameter model and it's negative loglikelihood:
+
+```{r Q2.5}
+### New Biggest Model ###
+
+t11 <- expr(1/(1+exp(-theta1)))
+
+mu1 <- expr(1/(theta2*!!t11 + (theta3)*(!!t11)^(theta4) * x))
+
+phi1 <- expr(exp(theta5) * exp(-!!t11))
+
+nll_better_1 <- 
+  expr(
+ !!phi1 * y * 1/(!!mu1) 
+ + (1 - !!phi1) * log(y)
+ + !!phi1 * log(!!mu1)
+ +lgamma(!!phi1)
+ - !!phi1 * log(!!phi1)
+)
+
+nll_better_deriv_1 <- deriv(expr         = nll_better_1,
+                  namevec      = c("theta1","theta2","theta3","theta4","theta5"),
+                  function.arg = c("theta1","theta2","theta3","theta4","theta5","x","y"),
+                  hessian      = TRUE)
+
+
+nll_better_fn_1 <- function(theta = c(0,0,0,0,0),
+                            data = 1){
+  
+  aux  <- nll_better_deriv_1(theta1 = theta[1],
+                          theta2 = theta[2],
+                          theta3 = theta[3],
+                          theta4 = theta[4],
+                          theta5 = theta[5],
+                          x      = data$x,
+                          y      = data$y)
+  
+  fn <- sum(as.numeric(aux))
+  
+  fn
+}
+
+
+nll_better_gr_1 <- function(theta = c(0,0,0,0,0),
+                            data = 1){
+  
+  aux  <- nll_better_deriv_1(theta1 = theta[1],
+                          theta2 = theta[2],
+                          theta3 = theta[3],
+                          theta4 = theta[4],
+                          theta5 = theta[5],
+                          x      = data$x,
+                          y      = data$y)
+  
+  grad <- apply(attr(aux,"gradient"),2,sum)
+  
+  grad
+}
+
+nll_better_hess_1 <- function(theta, data = dataQ2F){
+  
+   aux  <- nll_better_deriv_1(theta1 = theta[1],
+                          theta2 = theta[2],
+                          theta3 = theta[3],
+                          theta4 = theta[4],
+                          theta5 = theta[5],
+                          x      = data$x,
+                          y      = data$y)
+  
+  # Able to sum over individual sample hessians by linearity of partial differentiation
+  apply(attr(aux,"hessian"),c(2,3),sum)
+}
+```
+
+Now a fit_optim is run with a large N to find the optimal MLEs for $\theta_2 , \theta_3, \theta_4$ and $\theta_5$:
+
+```{r}
+### Optimisation Logic ###
+dataQ2F <-data.frame(dataQ2)
+
+fit_better <-fit_optim(par      = c(1, 1, 1, 1, 1),
+                    fn        = nll_better_fn_1,
+                    gr        = nll_better_gr_1,
+                    data      = dataQ2F,
+                    method    = "BFGS",
+                    hessian   = T,
+                    sd        =  2.5*c(1,1,1,1,1),
+                    N_samples = 400)
+```
+
+```{r}
+fit_better$par
+
+norm(nll_better_gr_1(fit_better$par, dataQ2) , type="2")
+```
+
+Here are the MLE values, which now we can sub into the 1 dimensional family, defined as follows:
+
+$$\mathcal{F}_{4}  =  \left\{f(y|\mu(g_{\alpha}(\theta_4), g_{\beta}(\theta_4), x), g_{\phi}(\theta_4) ) \ :\ 
+       \theta_4  \in \Theta_4(x) \subset R\right\} $$
+
+Where $g_{\alpha}(\theta_4) = 2.1884495 \theta_4$, $g_{\beta}(\theta_4) = -1.7838384 \theta_4^{ -5.5483040}$ and $g_{\phi}(\theta_4) = \exp(-0.5197645 - \theta_4)$
+
+Optimising this new function with fit_optim:
+
+```{r}
+t2 <- expr(1/(1+exp(-theta1)))
+
+mu2 <- expr(1/((2.1884495)*!!t2 + (-1.7838384)*((!!t2)^(-5.5483040)) * x))
+
+phi2 <- expr(exp(-0.5197645) * exp(-!!t2))
+
+nll_better_2 <- 
+  expr(
+ !!phi2 * y * 1/(!!mu2) 
+ + (1 - !!phi2) * log(y)
+ + !!phi2 * log(!!mu2)
+ +lgamma(!!phi2)
+ - !!phi2 * log(!!phi2)
+)
+
+nll_better_deriv_2 <- deriv(expr         = nll_better_2,
+                        namevec      = "theta1",
+                         function.arg = c("theta1","x","y"),
+                         hessian      = TRUE)
+
+
+nll_better_fn_2 <- function(theta = 1,
+                            data = 1){
+  
+  aux  <- nll_better_deriv_2(theta1 = theta[1],
+                          x      = data$x,
+                          y      = data$y)
+  
+  fn <- sum(as.numeric(aux))
+  
+  fn
+}
+
+
+nll_better_gr_2 <- function(theta = 1,
+                            data = 1){
+  
+  aux  <- nll_better_deriv_2(theta1 = theta[1],
+                          x      = data$x,
+                          y      = data$y)
+  
+  grad <- apply(attr(aux,"gradient"),2,sum)
+  
+  grad
+}
+
+nll_better_hess_2 <- function(theta, data = dataQ2F){
+  
+   aux  <- nll_better_deriv_2(theta1 = theta[1],
+                          x      = data$x,
+                          y      = data$y)
+  
+  # Able to sum over individual sample hessians by linearity of partial differentiation
+  apply(attr(aux,"hessian"),c(2,3),sum)
+}
+```
+
+
+```{r}
+fit_better2 <-fit_optim(par      = 1,
+                    fn        = nll_better_fn_2,
+                    gr        = nll_better_gr_2,
+                    data      = dataQ2F,
+                    method    = "BFGS",
+                    hessian   = T,
+                    sd        =  2,
+                    N_samples = 200)
+```
+
+
+Now computing the NIC:
+
+```{r}
+derivlogf_better <- function(data = 1){
+  
+  aux  <- nll_better_deriv_2(theta1 = fit_better2$par,
+                          x      = data$x,
+                          y      = data$y)
+  
+  
+  as.numeric(attributes(aux)$gradient)
+}
+
+### NIC Logic ###
+obsfisher_better    <- fit_better2$hessian
+
+#Defining empty matrices 
+Khat_better = 0
+
+#Computing all the Khats
+for(i in (1:1000)){
+  Khat_better = Khat_better + (derivlogf_better(dataQ2[i,])) %*% t(derivlogf_better(dataQ2[i,]))
+  
+}
+
+
+dnic_better = 1/obsfisher_better * Khat_better
+
+dnic_better
+
+fit_better2$value
+
+2*(fit_better2$value + dnic_better)
+
+```
+
+This NIC is significantly smaller than Model 1's NIC, so we can conclude this model is significantly better.
+
+```{r}
+
+muQ25 <- function(theta1, x){
+  1/((fit_better$par[2])*theta1 + (fit_better$par[3])*((theta1)^(fit_better$par[4])) * x)
+}
+
+plot(dataQ2$x, dataQ2$y,
+     main = "Scatterplot of data with the model 1 MLE mean and a 95% mean 
+     confidence interval overlayed",
+     xlab = "x", ylab="y",  xlim = c(0,1), col="blue")
+
+lines(x, muQ25(1/(1 + exp(-fit_better2$par)),x), col="red")
+
+```
+
+Looks good!
+
+# Appendices 
+
+## Appendix A
+
+In this appendix we derive the log-logistic distribution from the logistic. 
+
+Suppose $Z = \log Y \sim \text{logistic}(\mu, \sigma)$ where $\mu = \mathbb{E}[Z]$ and 
+$\sigma > 0$ is the scale. It is well known that $\text{Median}[Z] = \mathbb{E}[Z]$ 
+for logistic $Z$, and with the aforementioned parameterisation we have distribution
+$$f_{Z}(z | \mu, \sigma) = \frac{\exp(-(z-\mu)/\sigma)}{\sigma(1+\exp(-(z-\mu)/\sigma))^2}$$
+Now consider the random variable $Y = e^Z$. We use the following transformation 
+lemma without proof to find the pdf of $Y$. 
+
+#### Lemma 
+Let $X$ be a random variable and let $g: \Omega_X \to \Omega_Y$ be a 
+differentiable monotone bijection. Then the random variable $Y = g(X)$ has pdf
+$$f_Y(y) = f_X(g^{-1}(y)) \left(\frac{\mathrm{d}g^{-1}}{dy} {\Huge \mid}_{y = y}\right)$$
+Using this, taking $g: x \mapsto e^x$, we have 
+$$f_Y(y | \mu, \sigma) = \frac
+{\exp(-(\log y - \mu)/\sigma)}
+{\sigma y (1 + \exp(- (\log y - \mu)/\sigma))^2}
+{\bf 1}\{y > 0\}$$
+
+which simplifies to give
+
+$$f_Y(y | \mu, \sigma) = \frac
+{\exp\left(\frac{\mu}{\sigma}\right)}
+{\sigma y^{1 + 1 / \sigma}\left(1 + y^{-1/\sigma}
+\exp\left(\mu/\sigma\right)\right)^2} {\bf 1}\{y > 0\}$$
+
+```{r}
+v <- matrix(c(1:10), nrow=5, ncol=2)
+typeof(v[2,,drop=FALSE])
+
+
+```
+# References
+
+<!-- Here you should list the external references consulted if other than the course resources-->
+
+1. https://statproofbook.github.io/P/kl-conv.html
+
